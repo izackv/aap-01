@@ -183,9 +183,9 @@ spec:
     - redhat-registry
 
   # ---------------------------------------------------------------
-  # Platform Gateway (Tier 1)
+  # Platform Gateway (Tier 1) — the CR key for the gateway is `api`
   # ---------------------------------------------------------------
-  gateway:
+  api:
     disabled: false
     replicas: 2
     resource_requirements:
@@ -456,6 +456,9 @@ postgres_extra_args:
 ## 8. Platform Gateway and Redis
 
 New to 2.5 and easy to under-size. The gateway terminates the **websocket connection** that streams job events to every open browser tab. Redis is the pub/sub backbone behind it.
+
+> [!NOTE]
+> In the `AnsibleAutomationPlatform` CR the platform gateway is configured under the **`api:`** key (replicas, `resource_requirements`), not a `gateway:` key — confirm with `oc explain ansibleautomationplatform.spec.api`. Throughout this guide "gateway" refers to the component; the sizing values map onto `spec.api`.
 
 ### 8.1 Gateway sizing rule of thumb
 
@@ -764,7 +767,7 @@ Use before every production scaling event.
 **AAP CR**
 
 - [ ] `controller`, `gateway`, `redis`, `database` all sized to current tier.
-- [ ] `task_replicas ≥ 2`, `web_replicas ≥ 2`, `gateway.replicas ≥ 2`.
+- [ ] `task_replicas ≥ 2`, `web_replicas ≥ 2`, `api.replicas ≥ 2` (the gateway's CR key is `api`).
 - [ ] `postgres_extra_args` includes WAL and autovacuum tuning.
 - [ ] Hub / EDA disabled if not in scope.
 
