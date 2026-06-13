@@ -121,7 +121,7 @@ Plan for:
 - **TLS termination** — `route_tls_termination_mechanism` is `Edge` or `Passthrough`. Edge terminates at the router (simplest, supply a cert); Passthrough delegates TLS to the gateway pod (needed when end-to-end encryption to the pod is mandated).
 - **DNS** — one external record pointing at the Route.
 - **Custom CA / corporate trust** — air-gapped and corporate-PKI environments need a CA trust bundle so components trust internal registries, SSO, and external DBs.
-- **CasC timeouts** — high-volume API operations such as Configuration-as-Code restores can exceed the Route's default 30-second window and surface as HTTP 504/503. If you operate CasC, plan to raise `client_request_timeout` in the CR.
+- **CasC timeouts** — high-volume API operations such as Configuration-as-Code restores can exceed the Route's default 30-second window and surface as HTTP 504/503. Raise `client_request_timeout` in the CR **and** set `haproxy.router.openshift.io/timeout: 1h` on the gateway Route — they work together (see [Route timeout](../performance/openshift-large-inventory.md#82-route-timeout)).
 - **EDA event streams** — if external systems push events into EDA, decide now whether the event stream requires **mTLS**; it is configured through the CR.
 
 ### 1.6 Execution strategy: container groups vs automation mesh
@@ -248,7 +248,7 @@ spec:
       requests: { cpu: 100m, memory: 256Mi }
       limits:   { cpu: 500m, memory: 1000Mi }
   redis:
-    replicas: 1
+    replicas: 1                          # single replica = SPOF for gateway + EDA; raise for HA (see §4.5)
 
   # ----- Database: omit this block for managed PG; include for external -----
   database:
@@ -257,7 +257,8 @@ spec:
       - name: max_connections
         value: '1000'
     resource_requirements:
-      requests: { cpu: 100m, memory: 256Mi }
+      # DB pod: memory request == limit to prevent OOM kills (Red Hat guidance — see §1.9)
+      requests: { cpu: 100m, memory: 800Mi }
       limits:   { cpu: 500m, memory: 800Mi }
 
   # ----- Automation Controller -----
@@ -308,7 +309,7 @@ The parameters you will most often set, and what each one binds:
 
 > [!NOTE]
 > **Job pods are sized separately**
-> `ee_resource_requirements` sizes the controller's *internal* EE pods. The ephemeral `automation-job-*` pods spawned by a **container group** are sized by the **container group's pod spec override**, not by the CR. Plan and tune those independently (see §4.4).
+> `ee_resource_requirements` sizes the controller's *internal* EE pods. The ephemeral `automation-job-*` pods spawned by a **container group** are sized by the **container group's pod spec override**, not by the CR. Plan and tune those independently (see §4.4 and the full annotated [`pod_spec_override`](../../reference/config-snippets.md#2-container-group-pod_spec_override)).
 
 ### 2.4 Discovering every parameter
 
@@ -383,7 +384,7 @@ oc get pvc -n aap                                # storage + ACCESS MODES column
 oc get pods -n aap -l app.kubernetes.io/component=database
 ```
 
-What to verify against the plan: pod replica counts match the intended HA level; the hub PVC shows `RWM` if `storage_type: file`; pods are spread across nodes (not all stacked on one); and a `postgres`/`database` pod **exists** (managed) or is **absent** (external — confirmed by the secret).
+What to verify against the plan: pod replica counts match the intended HA level; the hub PVC shows `RWX` if `storage_type: file`; pods are spread across nodes (not all stacked on one); and a `postgres`/`database` pod **exists** (managed) or is **absent** (external — confirmed by the secret).
 
 ### 3.4 Controller-side reality check
 
@@ -443,7 +444,7 @@ peak fork demand      ×  per-fork RAM   =  execution-plane memory demand
 peak fork demand      ×  per-fork CPU   =  execution-plane CPU demand
 ```
 
-Job slicing splits one job template run across multiple `automation-job` pods, multiplying parallelism — and multiplying demand. Account for it explicitly.
+Job slicing splits one job template run across multiple `automation-job` pods, multiplying parallelism — and multiplying demand. Account for it explicitly: the exact gating math — and why a high slice count does *not* mean all slices run at once — is in [Job Slicing & Concurrency](../concurrency/job-slicing-and-concurrency.md#sec-3).
 
 ### 4.3 Existing resources vs needed resources
 
@@ -490,12 +491,14 @@ Checklist when container-group jobs stall:
 - [ ] The execution environment image is pullable from where the job pod lands
 - [ ] Job-pod requests/limits in the pod spec are realistic for the playbook's fork count
 
+> A `pending` container-group job is only one of several gates that throttle real concurrency. For the full set — template, instance/container group, controller caps, platform quota, and managed-host limits — see the [five gates](../concurrency/job-slicing-and-concurrency.md#sec-2).
+
 ### 4.5 Database and Redis
 
 The database is the most common silent bottleneck:
 
 - **Connection exhaustion** — controller + gateway + EDA can outgrow `max_connections`. Symptom: intermittent connection errors under load. Fix via `database.postgres_extra_settings`.
-- **IOPS starvation** — job-event writes are heavy; an undersized PVC `StorageClass` throttles the whole platform.
+- **IOPS starvation** — job-event writes are heavy; an undersized PVC `StorageClass` throttles the whole platform. The PostgreSQL knobs that matter at scale are in [config-snippets §3](../../reference/config-snippets.md#3-postgresql-tuning).
 - **Concurrency races** — keep current on patch releases; concurrent-job bugs that mishandled host facts have been fixed in maintenance streams.
 
 Redis underpins the gateway and EDA; a Redis failover can stall EDA activations until pods recycle — a known operational caveat worth alerting on.
