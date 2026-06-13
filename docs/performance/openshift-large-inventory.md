@@ -12,12 +12,13 @@ status: living-document
 
 # Tuning AAP 2.5 on OpenShift for Large Inventories
 
-> [!summary]
+> [!NOTE]
 > A focused, opinionated guide for running Ansible jobs against **500 to 5000 managed hosts** from an AAP 2.5 deployment on OpenShift, using the unified `AnsibleAutomationPlatform` CR. Covers everything from cluster sizing and CR shape, through PostgreSQL, Gateway, Redis, Receptor, container groups, and EE design, to a reproducible benchmark plan and observability hooks.
 >
 > If you have not yet hit the freeze symptom described in the companion troubleshooting runbook, you should still read this end-to-end before scaling past ~300 hosts per job — most of these settings cannot be bolted on after the fact without an outage.
 
-> [!info] What this guide assumes
+> [!NOTE]
+> **What this guide assumes**
 > - AAP 2.5 deployed via the **Ansible Automation Platform Operator** on OpenShift 4.14 or later.
 > - A single `AnsibleAutomationPlatform` CR (`aap.ansible.com/v1alpha1`).
 > - Managed hosts are **Linux, reachable over SSH** from worker nodes hosting the EE container group.
@@ -77,7 +78,7 @@ AAP 2.5 on OpenShift is a four-tier system. Tuning anywhere is bounded by the sl
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-> [!important]
+> [!IMPORTANT]
 > For large inventories the binding constraint is almost always **Tier 3 → Tier 2 → Tier 4**: the EE pod produces events faster than the controller-task callback receiver can write them to PostgreSQL. Every setting in this guide either reduces the event rate or expands the pipeline that drains it.
 
 ---
@@ -157,7 +158,7 @@ Use this as a **starting point**. Always validate with the benchmark in [§12](#
 | Job template **Forks** | 50 | 75 | 100 | 100–150 |
 | Job template **Job Slicing** | 1 | 4 | 8 | 16 |
 
-> [!note]
+> [!NOTE]
 > Forks × Slices ≈ effective parallelism. At 5000 hosts with Forks=100 and Slices=16, you have up to 1600 concurrent SSH sessions across slice pods. Confirm SNAT/egress and managed-host SSHD `MaxStartups` can absorb it.
 
 ---
@@ -294,7 +295,8 @@ spec:
       - 'autovacuum_analyze_scale_factor=0.02'
 ```
 
-> [!warning] CR patching at scale
+> [!WARNING]
+> **CR patching at scale**
 > Editing this CR triggers reconciliation of **all** sub-components. For runtime knobs (forks, verbosity, callback, fact cache, instance group definitions) prefer the **Controller UI / API**. Reserve CR edits for resource sizing, replica counts, image references, and `extra_settings`.
 
 ---
@@ -306,58 +308,34 @@ The default container group runs job pods with conservative limits. **This is wh
 
 ### 5.1 Create a dedicated container group for large jobs
 
-In Controller UI → **Instance Groups → Add → Container Group**, name it `large-fleet`, then click **Customize pod spec** and paste:
+In Controller UI → **Instance Groups → Add → Container Group**, name it `large-fleet`, then click **Customize pod spec** and paste the spec from [config-snippets §2](../../reference/config-snippets.md#2-container-group-pod_spec_override) (full annotated copy with node-pinning, topology spread, and env). Its shape:
 
 ```yaml
 apiVersion: v1
 kind: Pod
 metadata:
   namespace: aap
-  labels:
-    aap.example.com/workload: large-fleet
+  labels: { aap.example.com/workload: large-fleet }
 spec:
   serviceAccountName: default
   automountServiceAccountToken: false
-
-  # Schedule on AAP execution nodes only
-  nodeSelector:
-    aap-workload: execution
-
+  nodeSelector: { aap-workload: execution }
   tolerations:
-    - key: aap-workload
-      operator: Equal
-      value: execution
-      effect: NoSchedule
-
-  # Spread across nodes if multiple slices run concurrently
-  topologySpreadConstraints:
-    - maxSkew: 1
-      topologyKey: kubernetes.io/hostname
-      whenUnsatisfiable: ScheduleAnyway
-      labelSelector:
-        matchLabels:
-          aap.example.com/workload: large-fleet
-
+    - { key: aap-workload, operator: Equal, value: execution, effect: NoSchedule }
+  topologySpreadConstraints:                 # spread slice siblings across nodes
+    - { maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway,
+        labelSelector: { matchLabels: { aap.example.com/workload: large-fleet } } }
   containers:
     - name: worker
       image: 'image-registry.openshift-image-registry.svc:5000/aap/custom-ee-rhel9:1.4.2'
       imagePullPolicy: IfNotPresent
       args: ['ansible-runner', 'worker', '--private-data-dir=/runner']
       resources:
-        requests:
-          cpu: "1"
-          memory: "4Gi"
-        limits:
-          cpu: "4"
-          memory: "8Gi"
-      env:
-        - name: ANSIBLE_FORCE_COLOR
-          value: "0"
-        - name: ANSIBLE_STDOUT_CALLBACK
-          value: "default"
-        - name: ANSIBLE_CALLBACKS_ENABLED
-          value: "profile_tasks,timer"
+        requests: { cpu: "1", memory: "4Gi" }
+        limits:   { cpu: "4", memory: "8Gi" }
 ```
+
+(Field-by-field rationale in §5.3 below.)
 
 ### 5.2 Pin large-fleet templates to it
 
@@ -461,7 +439,7 @@ postgres_extra_args:
   - 'synchronous_commit=off'   # only if RPO allows; speeds up event ingest dramatically
 ```
 
-> [!warning]
+> [!WARNING]
 > `synchronous_commit=off` trades a small window of un-flushed transactions for a large gain in event ingest throughput. Acceptable for AAP because job event loss in the last ~200ms is recoverable from the artifacts directory. **Do not** use for the controller's encryption key tables.
 
 ### 7.3 Event retention
@@ -535,7 +513,7 @@ oc -n aap rsh deploy/aap-redis redis-cli INFO memory | grep -E 'used_memory_huma
 oc -n aap rsh deploy/aap-redis redis-cli INFO stats | grep -E 'instantaneous_ops_per_sec|rejected_connections|evicted_keys'
 ```
 
-> [!tip]
+> [!TIP]
 > `evicted_keys > 0` under load means Redis is at memory limit and dropping pub-sub messages. Symptom in the UI: missing or out-of-order events. Raise `redis.resource_requirements.limits.memory` and reconcile.
 
 ---
@@ -598,37 +576,31 @@ In the Controller UI for any template targeting >300 hosts:
 
 ### 10.2 `ansible.cfg` baked into the EE
 
+Full base block and the backend comparison: [config-snippets §1](../../reference/config-snippets.md#1-execution-environment-ansiblecfg). At this scale the **`redis`** backend (shared, cross-run) usually wins — but see the caveat below about *which* Redis:
+
 ```ini
 [defaults]
 strategy = free
 forks = 100
-gather_timeout = 30
-timeout = 30
 internal_poll_interval = 0.001
-host_key_checking = False
 callbacks_enabled = profile_tasks, timer
-stdout_callback = default
-display_skipped_hosts = False
-display_ok_hosts = True
 
-# Fact caching — shared in-memory via Redis is best at scale
-fact_caching = redis
+fact_caching = redis            # shared, cross-run — best at scale
 fact_caching_connection = aap-redis-svc:6379:1
 fact_caching_timeout = 7200
 
 [ssh_connection]
 pipelining = True
-ssh_args = -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=15 -o PreferredAuthentications=publickey
+ssh_args = -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=15
 control_path_dir = /tmp/ansible-cp
-control_path = %(directory)s/%%h-%%r
-retries = 3
 
 [persistent_connection]
 command_timeout = 60
 connect_timeout = 30
 ```
 
-> [!note] Fact caching against the platform Redis
+> [!NOTE]
+> **Fact caching against the platform Redis**
 > Using the AAP-managed Redis as a fact cache is supported but loads the same Redis instance that backs the gateway. For >2500-host environments either run a **dedicated Redis** for fact caching, or use the `jsonfile` backend pointed at a PVC mounted into the EE.
 
 ### 10.3 Playbook hygiene

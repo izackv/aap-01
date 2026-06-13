@@ -11,12 +11,13 @@ status: living-document
 
 # Aggregating Per-Host Data Into a Single File from Ansible / AAP
 
-> [!summary]
+> [!NOTE]
 > A focused guide on **how to collect data from every host in an inventory and write it into a single output file** — typically CSV. Covers the four patterns that actually work, why the obvious approach (every host appends to the same file) doesn't, and what changes when you turn on **AAP Job Slicing** so the job runs as several parallel sibling jobs in different pods.
 >
 > Examples use a fleet OS report (`hostname, distribution, version, kernel`) but the patterns apply to any per-host aggregation: open ports, package inventory, compliance findings, hardware specs, etc.
 
-> [!info] What this guide assumes
+> [!NOTE]
+> **What this guide assumes**
 > - You are writing an Ansible playbook that runs against many hosts (tested examples target 1000-host fleets).
 > - The deliverable is a **single file** with one row per host.
 > - You may or may not be using **AAP Job Slicing**. The slicing-aware patterns are in [§5](#sec-5).
@@ -106,7 +107,8 @@ hostname,fqdn,distribution,version,major,kernel
 - **`hostvars` is global** — at template-render time, the chosen host can read every other host's `host_record` via `hostvars[host]`.
 - **`ansible_play_hosts | sort`** gives deterministic CSV ordering, so diffs across runs are meaningful.
 
-> [!tip] `ansible_play_hosts` vs `ansible_play_hosts_all`
+> [!TIP]
+> **`ansible_play_hosts` vs `ansible_play_hosts_all`**
 > - `ansible_play_hosts` — only hosts still in scope at this point (failed/unreachable hosts are dropped).
 > - `ansible_play_hosts_all` — every host the play started with, including ones that failed earlier.
 > - For inventory reports use `ansible_play_hosts_all` so failed hosts still appear (probably with empty fields). For "what we successfully verified" reports, use `ansible_play_hosts`.
@@ -150,7 +152,7 @@ Three reasons not to use it:
 
 You can sometimes make it work with `throttle: 1` or a serializing lock, but at that point you've turned a parallel playbook into a serial one — slow, fragile, and harder to read than Pattern 1.
 
-> [!warning]
+> [!WARNING]
 > The exception is `lineinfile` with `delegate_to` to a **single named delegation host** combined with `throttle: 1`. This serializes writes correctly. It's still slower and more brittle than Pattern 1 — there's almost never a reason to prefer it.
 
 ---
@@ -309,7 +311,7 @@ Sketch of the merge playbook:
         executable: /bin/bash
 ```
 
-> [!note]
+> [!NOTE]
 > The exact API endpoint for downloading job artifacts varies slightly between AAP 2.4 and 2.5; the `awx.awx.controller_api` module abstracts this. The shape above is illustrative — adapt to your version's API.
 
 ### 5.2 Option B — Each slice writes directly to a shared backing store
@@ -470,7 +472,8 @@ Final export — pure SQL, no Ansible needed:
        ORDER BY hostname) TO 'os_report.csv' CSV HEADER;
 ```
 
-> [!tip] Don't use the AAP-managed PostgreSQL for this
+> [!TIP]
+> **Don't use the AAP-managed PostgreSQL for this**
 > The PG instance bundled with AAP is for the controller's own state. Putting your own report tables in there will work but is operationally messy and mixes lifecycles. Run a separate database — even a tiny one — for your inventory reports.
 
 ---
@@ -488,7 +491,8 @@ This is the directory `ansible-runner` carves out for each job in AAP. Files wri
 - Survive the job pod's lifetime (collected before the pod terminates).
 - Can be downloaded via the Controller API: `/api/v2/jobs/<id>/artifacts/`.
 
-> [!example] Recommended path
+> [!NOTE]
+> **Recommended path**
 > `/runner/artifacts/{{ awx_job_id | default('local') }}/os_report.csv`
 >
 > Falls back to `local` for direct CLI runs, uses the real job ID under AAP.

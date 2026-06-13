@@ -15,7 +15,7 @@ status: living-document
 
 # AAP Large-Scale Job Tuning & Troubleshooting
 
-> [!summary]
+> [!NOTE]
 > Symptom: an Ansible job in **Red Hat Ansible Automation Platform** runs against hundreds or thousands of hosts and appears to **freeze mid-run**. Slicing the inventory into ~30-host batches works.
 >
 > This runbook covers how to **diagnose**, **explain**, and **tune** AAP for large-scale jobs across all four supported deployment topologies:
@@ -29,7 +29,8 @@ status: living-document
 >
 > The product is AAP — not stand-alone Ansible — so the failure modes include the **Controller task system, callback receiver, dispatcher, Receptor mesh, execution environments, Redis (2.5), and PostgreSQL**, not just `ansible-playbook` and SSH.
 
-> [!info] Version-mode legend
+> [!NOTE]
+> **Version-mode legend**
 > Throughout this document, blocks are tagged with one of:
 > `[2.4 RPM]` · `[2.5 RPM]` · `[2.5 Containerized]` · `[2.4 OCP]` · `[2.5 OCP]`
 > Where instructions apply to all topologies, no tag is shown.
@@ -52,7 +53,7 @@ status: living-document
 | **Redis** (cache / pub-sub) | not present | RPM-installed Redis | Redis container | not present | Redis Deployment |
 | **Platform Gateway** (unified UI / SSO) | not present | yes (2.5 unified UI) | yes | not present | yes |
 
-> [!important]
+> [!IMPORTANT]
 > Two architectural shifts in 2.5 matter for scale:
 > 1. **Platform Gateway** is now the entry point and SSO/auth layer. It can become a bottleneck for the WebSocket event stream that the UI subscribes to.
 > 2. **Redis** is now used as cache and pub-sub. A degraded Redis manifests as UI lag, missing events, or dispatcher stalls — symptoms that look like "freeze."
@@ -79,7 +80,7 @@ controller-task ── callback receiver ──▶ PostgreSQL (main_jobevent)
                               └──────────────▶ UI ◀───────────┘
 ```
 
-> [!important]
+> [!IMPORTANT]
 > A "frozen" job in AAP is almost never a frozen `ansible-playbook` process. It is usually one of:
 > 1. The **EE process / pod** hitting CPU, memory, or fd limits.
 > 2. The **callback receiver** falling behind on event ingestion.
@@ -163,7 +164,7 @@ free -h
 iostat -xz 2 5
 ```
 
-> [!tip]
+> [!TIP]
 > If `loginctl show-user aap | grep Linger` reports `Linger=no`, user services stop when the user logs out. That alone has caused mysterious post-reboot "freezes" on containerized 2.5 — fix with `sudo loginctl enable-linger aap`.
 
 <a id="sec-2-3"></a>
@@ -183,7 +184,7 @@ sudo -iu aap podman exec -it automation-controller-task awx-manage callback_stat
 sudo -iu aap podman exec -it automation-controller-task awx-manage list_instances
 ```
 
-> [!tip]
+> [!TIP]
 > If `callback_stats` shows a growing backlog while the EE container is idle and the playbook has finished, the bottleneck is **callback receiver → PostgreSQL** (or **→ Redis** in 2.5), not Ansible.
 
 <a id="sec-2-4"></a>
@@ -238,7 +239,7 @@ ulimit -n
 <a id="sec-3"></a>
 ## 3. Diagnostic Workflow — AAP on OpenShift
 
-> [!important]
+> [!IMPORTANT]
 > Pod and Deployment names differ between 2.4 and 2.5:
 > - **`[2.4 OCP]`** — Operator manages an `AutomationController` named e.g. `controller`. Deployments: `controller-web`, `controller-task`. Hub is a separate `AutomationHub` CR.
 > - **`[2.5 OCP]`** — Operator manages a single `AnsibleAutomationPlatform` named e.g. `myaap`. Deployments are prefixed with that name and the component, e.g. `myaap-controller-task`, `myaap-gateway`, `myaap-eda-api`, `myaap-redis`.
@@ -259,7 +260,7 @@ oc -n $NS describe pod <automation-job-pod> | \
    grep -A3 -E 'Limits|Requests|State|Last State|Reason|Message'
 ```
 
-> [!warning]
+> [!WARNING]
 > If `Last State` shows `Terminated / OOMKilled`, that is the answer. Bump the **container group pod spec** memory limit (see [§6.4](#sec-6-4)). The default is far too small for 300+ hosts of fact gathering.
 
 <a id="sec-3-2"></a>
@@ -349,7 +350,7 @@ oc -n $NS describe quota
 oc -n $NS describe limitrange
 ```
 
-> [!tip]
+> [!TIP]
 > A pod that schedules but never starts often means a **ResourceQuota** or **LimitRange** is rejecting the requested CPU/memory. Always check both before assuming it is an AAP problem.
 
 ---
@@ -432,7 +433,8 @@ Each issue lists: **symptom → cause → where it bites → fix reference**.
 <a id="sec-5-1"></a>
 ### 5.1 Workflow A — VM RPM (`[2.4 RPM]` / `[2.5 RPM]`)
 
-> [!example] Goal
+> [!NOTE]
+> **Goal**
 > Run a 1000-host playbook reliably from an RPM-installed AAP cluster.
 
 #### Topology recommendation
@@ -456,7 +458,8 @@ Each issue lists: **symptom → cause → where it bites → fix reference**.
 <a id="sec-5-2"></a>
 ### 5.2 Workflow B — VM Containerized (`[2.5 Containerized]`)
 
-> [!example] Goal
+> [!NOTE]
+> **Goal**
 > Run a 1000-host playbook on the AAP 2.5 containerized installer (the strategic install path going forward).
 
 #### Topology recommendation
@@ -485,7 +488,8 @@ Same per-role sizing as Workflow A, plus:
 <a id="sec-5-3"></a>
 ### 5.3 Workflow C — OpenShift `[2.4 OCP]` (`AutomationController` CR)
 
-> [!example] Goal
+> [!NOTE]
+> **Goal**
 > Same 1000-host run, on AAP 2.4 deployed via the Operator.
 
 - Single-component CRDs: `AutomationController` for Controller, `AutomationHub` for Hub.
@@ -495,7 +499,8 @@ Same per-role sizing as Workflow A, plus:
 <a id="sec-5-4"></a>
 ### 5.4 Workflow D — OpenShift `[2.5 OCP]` (`AnsibleAutomationPlatform` CR + Platform Gateway)
 
-> [!example] Goal
+> [!NOTE]
+> **Goal**
 > Same 1000-host run, on AAP 2.5 deployed via the Operator.
 
 - Single unified `AnsibleAutomationPlatform` CR (`aap.ansible.com/v1alpha1`) with `spec.controller`, `spec.hub`, `spec.eda` subspecs.
@@ -626,7 +631,7 @@ spec:
     limits:   { cpu: "2",   memory: "8Gi" }
 ```
 
-> [!note]
+> [!NOTE]
 > Field names under `spec.controller` in the 2.5 unified CR mirror those in the 2.4 `AutomationController` CR. The lift-and-shift is mostly mechanical — you indent the existing 2.4 spec under `spec.controller` and add `gateway`, `redis`, `eda`, `hub` siblings.
 
 <a id="sec-6-2"></a>
@@ -648,21 +653,16 @@ Available under **Settings → Jobs** (UI) or via API / `awx-manage settings_set
 <a id="sec-6-3"></a>
 ### 6.3 PostgreSQL tuning
 
-Same `postgresql.conf` knobs apply everywhere; values for a 1000-host workload:
+Same `postgresql.conf` knobs apply everywhere; values for a 1000-host workload. Full block — in both `postgresql.conf` (VM/external) and `postgres_extra_args` (Operator) form — plus the `synchronous_commit` trade-off: [config-snippets §3](../../reference/config-snippets.md#3-postgresql-tuning).
 
 ```ini
 shared_buffers = 4GB
 work_mem = 32MB
-maintenance_work_mem = 512MB
 effective_cache_size = 12GB
 max_connections = 1024
-checkpoint_timeout = 15min
 checkpoint_completion_target = 0.9
 wal_compression = on
-random_page_cost = 1.1          # for SSD/NVMe
-log_min_duration_statement = 1000
-autovacuum_vacuum_scale_factor = 0.05
-autovacuum_analyze_scale_factor = 0.02
+autovacuum_vacuum_scale_factor = 0.05      # event tables churn fast
 ```
 
 Also:
@@ -685,37 +685,21 @@ Bake a **custom EE** with `ansible-builder` that includes the `ansible.cfg` from
 
 #### `[2.4 OCP]` / `[2.5 OCP]` — container group `pod_spec_override`
 
-Controller UI → **Instance Groups → Container Group → Customize pod spec**:
+Controller UI → **Instance Groups → Container Group → Customize pod spec**. Full annotated spec, including the **2.4 vs 2.5 image** line and node-pinning, in [config-snippets §2](../../reference/config-snippets.md#2-container-group-pod_spec_override). The sizing core:
 
 ```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  namespace: aap
 spec:
   serviceAccountName: default
   automountServiceAccountToken: false
   containers:
     - name: worker
-      # [2.5] image:
       image: 'registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest'
-      # [2.4] image:
-      # image: 'registry.redhat.io/ansible-automation-platform-24/ee-supported-rhel9:latest'
-      imagePullPolicy: IfNotPresent
-      args: ['ansible-runner', 'worker', '--private-data-dir=/runner']
       resources:
-        requests:
-          cpu: "1"
-          memory: "4Gi"
-        limits:
-          cpu: "4"
-          memory: "8Gi"
-      env:
-        - name: ANSIBLE_FORCE_COLOR
-          value: "0"
+        requests: { cpu: "1", memory: "4Gi" }
+        limits:   { cpu: "4", memory: "8Gi" }
 ```
 
-> [!tip]
+> [!TIP]
 > The container group pod spec is the **single biggest lever** for the freeze symptom on OpenShift. Memory limit `<` peak fact-gather memory `=` `OOMKilled`.
 
 <a id="sec-6-5"></a>
@@ -774,16 +758,14 @@ spec:
 <a id="sec-7-1"></a>
 ### 7.1 `ansible.cfg` baked into the EE
 
+Full base block and the fact-caching backend comparison: [config-snippets §1](../../reference/config-snippets.md#1-execution-environment-ansiblecfg). This runbook uses the **`jsonfile`** backend (the simplest on OCP, where the EE filesystem is ephemeral) — see the note below for when to switch to `redis`:
+
 ```ini
 [defaults]
 strategy = free
 forks = 100
-gather_timeout = 30
-timeout = 30
 internal_poll_interval = 0.001
-host_key_checking = False
 callbacks_enabled = profile_tasks, timer
-stdout_callback = default
 
 fact_caching = jsonfile
 fact_caching_connection = /runner/artifacts/fact_cache
@@ -791,13 +773,11 @@ fact_caching_timeout = 7200
 
 [ssh_connection]
 pipelining = True
-ssh_args = -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=15 -o PreferredAuthentications=publickey
+ssh_args = -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=15
 control_path_dir = /tmp/ansible-cp
-control_path = %(directory)s/%%h-%%r
-retries = 3
 ```
 
-> [!note]
+> [!NOTE]
 > On OpenShift the EE filesystem is ephemeral; `fact_caching_connection` should point under `/runner/artifacts/` (persisted for the run) or use `redis` against an in-cluster Redis for cross-run caching.
 >
 > `[2.5 OCP]`: the cluster already runs a Redis Pod for the platform itself. **Do not reuse it for fact caching** — stand up a separate Redis instance for fact caching to avoid cross-tenant noise.
@@ -824,30 +804,15 @@ retries = 3
 <a id="sec-7-3"></a>
 ### 7.3 OS-level limits on VM execution nodes
 
-`/etc/security/limits.d/awx.conf` (RPM) or under the install user (containerized):
+Full `limits.d` + `sysctl.d` blocks, and the `[2.5 Containerized]` user-slice `TasksMax` override: [config-snippets §4](../../reference/config-snippets.md#4-os-level-limits-vm-execution-nodes). The essentials:
 
 ```
+# /etc/security/limits.d/awx.conf  (RPM) — or under the install user (containerized)
 awx soft nofile 65535
 awx hard nofile 65535
-awx soft nproc  32768
-awx hard nproc  32768
-```
-
-`/etc/sysctl.d/99-awx.conf`:
-
-```
+# /etc/sysctl.d/99-awx.conf
 net.ipv4.ip_local_port_range = 15000 65000
-net.core.somaxconn = 1024
-net.ipv4.tcp_tw_reuse = 1
 fs.file-max = 2097152
-```
-
-For `[2.5 Containerized]` also raise the user-level limits:
-
-```ini
-# /etc/systemd/system/user-1001.slice.d/override.conf  (UID of the install user)
-[Slice]
-TasksMax=infinity
 ```
 
 <a id="sec-7-4"></a>
@@ -917,7 +882,8 @@ For each row capture:
 <a id="sec-10"></a>
 ## 10. Fast-Path Recommendations
 
-> [!tip] If you only do five things
+> [!TIP]
+> **If you only do five things**
 > 1. Set **template Forks = 50–100** and **Job Slicing = 4** instead of slicing manually.
 > 2. Set **`strategy: free`** in your playbook (or `host_pinned`).
 > 3. Add **fact caching** in the EE's `ansible.cfg` and use `gather_subset`.
@@ -925,7 +891,8 @@ For each row capture:
 >    **VM**: add a **dedicated execution node**.
 > 5. Drop **verbosity to 0–1** for production, and put **PostgreSQL on fast storage**.
 
-> [!tip] `[2.5]` add-ons
+> [!TIP]
+> **`[2.5]` add-ons**
 > 6. Confirm **Redis** is healthy and adequately sized (`redis-cli info clients|memory`).
 > 7. `[2.5 OCP]` — give **Platform Gateway** at least 2 replicas with 2 CPU / 4 GiB limits.
 > 8. `[2.5 Containerized]` — `loginctl enable-linger <install-user>`, and put data dirs on a fast volume.

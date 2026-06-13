@@ -1,0 +1,164 @@
+---
+# ===========================================================================
+# Fleet discovery -> one CSV on <mng_host>:/myshare/data/servers_info.csv
+#
+# Self-contained for AAP: no ansible.cfg and no static inventory required.
+#  * The host list comes from the AAP inventory attached to the job template
+#    (read here as groups['all']).
+#  * All connection tuning that would normally live in ansible.cfg is set as
+#    play vars below. The ONLY thing that can't be: 'forks' -> set it on the
+#    AAP job template's Forks field (or -f on the CLI).
+#  * The report host is defined with add_host, so it need NOT be in the
+#    AAP inventory.
+#
+# nmap-gated flow: sweep -> facts only for up-and-22-open -> merge to one CSV.
+# ===========================================================================
+
+- name: "Phase 1 - nmap sweep on the tools host (mng_host)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    mng_host: mng01                # tools host: runs nmap AND stores the CSV
+    mng_host_address: ""           # leave EMPTY if the EE can reach mng_host by name
+                                   # (the usual case); set only if the name won't resolve
+    mng_host_user: ""              # set if mng_host needs a different SSH user than the fleet
+    scan_ports: "22,80,443,3389,5985,5986"
+    # Privileged tools host (root / CAP_NET_RAW). If mng_host can't run privileged,
+    # use:  nmap_opts: "-sT -sV --version-light"  (no -O: loses OS guess for no-SSH hosts)
+    nmap_opts: "-sS -O --osscan-guess -sV --version-light"
+    remote_targets_file: /tmp/discovery_targets.txt
+    remote_xml: /tmp/discovery_nmap.xml
+    local_xml: /tmp/discovery_nmap.xml
+  tasks:
+    - name: Target list = the AAP inventory (minus control / tools host)
+      ansible.builtin.set_fact:
+        run_targets: "{{ groups['all'] | default([]) | difference(['localhost', '127.0.0.1', mng_host]) }}"
+
+    - name: Fail early if the inventory is empty
+      ansible.builtin.assert:
+        that: run_targets | length > 0
+        fail_msg: "No hosts in the inventory attached to this job."
+
+    - name: Make the tools host usable for delegation (needn't be in inventory)
+      ansible.builtin.add_host:
+        name: "{{ mng_host }}"
+        # IMPORTANT: these plays run connection:local, so without ansible_connection:ssh
+        # the delegated tasks would execute on the EE instead of on mng_host.
+        ansible_connection: ssh
+        ansible_host: "{{ mng_host_address if mng_host_address else omit }}"
+        ansible_user: "{{ mng_host_user if mng_host_user else omit }}"
+        groups: _tools
+      changed_when: false
+
+    - name: Write the target list to a file ON the tools host (nmap -iL input)
+      # -iL avoids a 5000-host command line (ARG_MAX) and is cleaner.
+      ansible.builtin.copy:
+        content: "{{ run_targets | join('\n') + '\n' }}"
+        dest: "{{ remote_targets_file }}"
+        mode: "0644"
+      delegate_to: "{{ mng_host }}"
+
+    - name: Run nmap once on the tools host (reads -iL; -sS/-O need root there)
+      ansible.builtin.command: >-
+        nmap -PE -PS22,443,3389 -PA80 {{ nmap_opts }}
+        -T4 --min-hostgroup 256 --max-retries 2 --host-timeout 30s
+        -p {{ scan_ports }} -iL {{ remote_targets_file }} -oX {{ remote_xml }}
+      become: true                 # escalates on the tools host, not the EE
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ mng_host }}"
+
+    - name: Pull the nmap XML back to the controller
+      ansible.builtin.fetch:
+        src: "{{ remote_xml }}"
+        dest: "{{ local_xml }}"
+        flat: true
+      delegate_to: "{{ mng_host }}"
+
+    - name: Parse the XML locally (stdlib python; runs fine in the EE)
+      ansible.builtin.command: "python3 {{ playbook_dir }}/../files/parse_nmap.py {{ local_xml }}"
+      register: nmap_parsed
+      changed_when: false
+
+    - name: Load and index records (by fqdn AND ip)
+      ansible.builtin.set_fact:
+        run_nmap_records: "{{ nmap_parsed.stdout | from_json }}"
+
+    - name: Build O(1) lookup index
+      vars:
+        keys: >-
+          {{ (run_nmap_records | map(attribute='ipv4') | list)
+             + (run_nmap_records | map(attribute='fqdn') | list) }}
+        vals: "{{ run_nmap_records + run_nmap_records }}"
+      ansible.builtin.set_fact:
+        nmap_by_key: "{{ dict(keys | zip(vals)) }}"
+
+    - name: Hand up-and-22-open hosts to Phase 2 (dead / no-SSH are NOT added)
+      ansible.builtin.add_host:
+        name: "{{ item.fqdn }}"
+        groups: ssh_candidates
+        ansible_host: "{{ item.ipv4 }}"
+      loop: "{{ run_nmap_records | selectattr('ssh_open') | list }}"
+      loop_control:
+        label: "{{ item.fqdn }}"
+      changed_when: false
+
+    - name: Split
+      ansible.builtin.debug:
+        msg: >-
+          {{ run_targets | length }} targets:
+          {{ run_nmap_records | selectattr('reachable') | list | length }} up,
+          {{ groups['ssh_candidates'] | default([]) | length }} with SSH (-> facts).
+
+
+- name: "Phase 2 - authoritative facts (only the SSH-reachable subset)"
+  hosts: ssh_candidates
+  gather_facts: true
+  gather_subset: ["!all", "min", "virtual", "hardware", "network"]
+  gather_timeout: 15              # was ansible.cfg gather_timeout
+  strategy: free
+  ignore_unreachable: true
+  ignore_errors: true
+  vars:                           # everything here was ansible.cfg
+    ansible_timeout: 5                                     # connect timeout
+    ansible_pipelining: true
+    ansible_host_key_checking: false
+    ansible_python_interpreter: auto_silent
+    # Adds our options on top of Ansible's default ControlMaster/Persist ssh_args.
+    ansible_ssh_common_args: "-o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+  tasks: []
+
+
+- name: "Phase 3 - merge & write one CSV to the tools host"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    mng_host: mng01               # same tools host that ran nmap
+    report_dir: /myshare/data
+    report_file: servers_info.csv
+  tasks:
+    - name: Timestamp for last_checked (UTC)
+      ansible.builtin.set_fact:
+        run_timestamp: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+    - name: Ensure report directory exists on {{ mng_host }}
+      ansible.builtin.file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: "{{ mng_host }}"
+
+    - name: Write the consolidated CSV
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/report.csv.j2"
+        dest: "{{ report_dir }}/{{ report_file }}"
+        mode: "0644"
+        trim_blocks: true
+        lstrip_blocks: true
+      delegate_to: "{{ mng_host }}"
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: "Report written to {{ mng_host }}:{{ report_dir }}/{{ report_file }}"

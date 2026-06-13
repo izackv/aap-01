@@ -1,0 +1,48 @@
+{#- One consolidated row per target. Facts win; nmap fills the failures. -#}
+{%- macro q(v) -%}"{{ (v if v is not none else '') | string | replace('"', '""') }}"{%- endmacro -%}
+fqdn,ipv4,reachable,ssh_open,os,os_version,os_accuracy,detection_method,machine_type,virt_type,arch,kernel,uptime_days,cpu_cores,memory_mb,open_ports,mac,mac_vendor,ssh_banner,last_checked
+{% for tgt in run_targets %}
+{%-   set hv = hostvars[tgt] | default({}) %}
+{%-   set has_facts = (hv.ansible_distribution is defined) %}
+{%-   if has_facts %}
+{%-     set is_ip = tgt | regex_search('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$') %}
+{%-     set fqdn = hv.ansible_fqdn | default(tgt) %}
+{%-     set ip = ((hv.ansible_default_ipv4 | default({})).address | default('')) or (tgt if is_ip else '') %}
+{%-     set reachable = 'True' %}
+{%-     set ssh_open = 'True' %}
+{%-     set os = hv.ansible_distribution %}
+{%-     set osver = hv.ansible_distribution_version %}
+{%-     set acc = '100' %}
+{%-     set method = 'ssh-facts' %}
+{%-     set role = hv.ansible_virtualization_role | default('') %}
+{%-     set vtype = hv.ansible_virtualization_type | default('') %}
+{%-     set mtype = 'VM' if role == 'guest' else ('physical' if role in ['host', 'NA'] else 'unknown') %}
+{%-     set arch = hv.ansible_architecture | default('') %}
+{%-     set kernel = hv.ansible_kernel | default('') %}
+{%-     set uptime = (hv.ansible_uptime_seconds | default(0) | int) // 86400 %}
+{%-     set cpu = hv.ansible_processor_vcpus | default('') %}
+{%-     set mem = hv.ansible_memtotal_mb | default('') %}
+{%-     set nd = nmap_by_key[tgt] if tgt in nmap_by_key else none %}
+{%-     set open_ports = ((nd.open_ports | join(';')) if nd else '') %}
+{%-     set mac = (nd.mac if nd else '') %}{% set mac_vendor = (nd.mac_vendor if nd else '') %}
+{%-     set banner = (nd.ssh_banner if nd else '') %}
+{%-   else %}
+{%-     set n = nmap_by_key[tgt] if tgt in nmap_by_key else none %}
+{%-     set fqdn = (n.fqdn if (n and n.fqdn) else tgt) %}
+{%-     set ip = n.ipv4 if n else '' %}
+{%-     set reachable = (n.reachable if n else false) %}
+{%-     set ssh_open = (n.ssh_open if n else false) %}
+{%-     set os = ((n.nmap_os_family or n.nmap_os) if n else '') %}
+{%-     set osver = (n.nmap_os_gen if n else '') %}
+{%-     set acc = (n.nmap_os_accuracy if n else '') %}
+{%-     set method = ('nmap-guess' if (n and n.nmap_os) else 'none') %}
+{%-     set vtype = (n.vm_hint if (n and n.vm_hint) else '') %}
+{%-     set mtype = ('VM' if (n and n.vm_hint) else 'unknown') %}
+{%-     set arch = '' %}{% set kernel = '' %}{% set uptime = '' %}{% set cpu = '' %}{% set mem = '' %}
+{%-     set open_ports = ((n.open_ports | join(';')) if n else '') %}
+{%-     set mac = (n.mac if n else '') %}
+{%-     set mac_vendor = (n.mac_vendor if n else '') %}
+{%-     set banner = (n.ssh_banner if n else '') %}
+{%-   endif %}
+{{ q(fqdn) }},{{ q(ip) }},{{ q(reachable) }},{{ q(ssh_open) }},{{ q(os) }},{{ q(osver) }},{{ q(acc) }},{{ q(method) }},{{ q(mtype) }},{{ q(vtype) }},{{ q(arch) }},{{ q(kernel) }},{{ q(uptime) }},{{ q(cpu) }},{{ q(mem) }},{{ q(open_ports) }},{{ q(mac) }},{{ q(mac_vendor) }},{{ q(banner) }},{{ q(run_timestamp) }}
+{% endfor %}

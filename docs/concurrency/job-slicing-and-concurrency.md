@@ -11,12 +11,13 @@ status: living-document
 
 # AAP Job Slicing & Concurrency — Understanding Real Parallelism
 
-> [!summary]
+> [!NOTE]
 > You set **Job Slicing = 20** and only **3 pods are running**. Why?
 >
 > The slice count tells AAP how many sibling jobs to *create*. Whether they actually *run in parallel* is a completely separate decision controlled by **instance-group capacity**, **container-group limits**, **Controller-wide caps**, and finally **OpenShift / VM resource availability**. This guide walks every gate that throttles real concurrency, in the order AAP evaluates them, and shows exactly where to change each one.
 
-> [!info] What this guide assumes
+> [!NOTE]
+> **What this guide assumes**
 > - You understand what a Job Template is and have used Job Slicing at least once.
 > - You may be on AAP 2.4 or 2.5, VM-based or OpenShift. Differences are called out where they matter.
 > - The default container group on OpenShift ships with conservative limits — you will likely need to change them.
@@ -49,7 +50,7 @@ When you set **Job Slicing = N** on a Job Template:
 3. Each child consumes capacity **as if it were a normal job** — the workflow doesn't reserve N slots up front.
 4. The workflow is "complete" when all N children finish (success or failure).
 
-> [!important]
+> [!IMPORTANT]
 > Slicing does **not** mean "20 things run at once." It means "20 separate jobs are created, each will run when capacity allows." How many run in parallel is governed by the gates in [§2](#sec-2).
 
 Implications:
@@ -277,7 +278,7 @@ Set `max_forks ≥ 1020` (round up to 1100 for headroom). Now all 20 dispatch si
 }
 ```
 
-> [!note]
+> [!NOTE]
 > The Operator on OpenShift does **not** manage instance groups via the CR. They live in the controller's database and you set them via the Controller UI / API. Treat them as runtime configuration, not infra-as-code (or manage them via `awx.awx.instance_group` in a bootstrap playbook).
 
 ### 4.3 Controller-wide settings
@@ -305,24 +306,14 @@ Set `max_forks ≥ 1020` (round up to 1100 for headroom). Now all 20 dispatch si
 
 ### 4.4 OpenShift platform — `pod_spec_override`
 
-Sized in the container group's Pod spec, not in the AAP CR:
+Sized in the container group's Pod spec, not in the AAP CR (full annotated spec in [config-snippets §2](../../reference/config-snippets.md#2-container-group-pod_spec_override)). What matters for the concurrency math is `resources.requests`:
 
 ```yaml
-apiVersion: v1
-kind: Pod
 spec:
-  serviceAccountName: default
-  automountServiceAccountToken: false
-  nodeSelector: { aap-workload: execution }
-  tolerations:
-    - { key: aap-workload, operator: Equal, value: execution, effect: NoSchedule }
   containers:
     - name: worker
-      image: image-registry.openshift-image-registry.svc:5000/aap/custom-ee-rhel9:1.4.2
-      imagePullPolicy: IfNotPresent
-      args: ['ansible-runner', 'worker', '--private-data-dir=/runner']
       resources:
-        requests: { cpu: "1", memory: "4Gi" }
+        requests: { cpu: "1", memory: "4Gi" }   # × max_concurrent_jobs = the quota you need
         limits:   { cpu: "4", memory: "8Gi" }
 ```
 
@@ -356,7 +347,7 @@ spec:
       defaultRequest: { cpu: "1", memory: 4Gi }
 ```
 
-> [!warning]
+> [!WARNING]
 > If `LimitRange.max` is below your `pod_spec_override.resources.limits`, **the LimitRange wins silently**. Pods schedule with the LimitRange-clamped values. Always check `oc describe limitrange` first when sizing seems off.
 
 ---

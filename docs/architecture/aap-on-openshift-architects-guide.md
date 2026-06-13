@@ -15,7 +15,8 @@ status: living-document
 
 # Ansible Automation Platform on OpenShift: An Architect's Field Guide
 
-> [!abstract] Who this is for
+> [!NOTE]
+> **Who this is for**
 > You already run OpenShift in production and you already write Ansible. This guide does not re-explain Operators, Routes, playbooks, or forks. It connects the two worlds: how to **plan**, **install**, **audit**, and **right-size** Ansible Automation Platform (AAP) 2.6 as a first-class OCP workload.
 
 The deployment-model question is effectively settled. RPM-based installation was deprecated in AAP 2.5, AAP 2.6 is the **last release that ships an RPM installer** (RHEL 9 only), and from AAP 2.7 onward the only supported footprints are *containerized on RHEL* and *Operator-based on OpenShift*. If OCP is already your platform, the AAP Operator is the strategic landing zone — and AAP 2.4 reaches end of Maintenance Support on **30 June 2026**, so this is a now-problem, not a someday-problem.
@@ -42,7 +43,8 @@ On OpenShift, AAP runs as a set of Deployments managed by the AAP Operator. Red 
 | **Operator growth** | Single Node OpenShift (SNO), no component redundancy | 32 GB RAM, 16 vCPU, 128 GB disk, ~3000 IOPS | PoC, small teams, non-critical automation |
 | **Operator enterprise** | Multi-node OCP, replicated components, external DB | Sized to workload | Production, anything with an SLA |
 
-> [!warning] One Operator per namespace
+> [!WARNING]
+> **One Operator per namespace**
 > You can install **only one instance** of the AAP Operator into a given namespace. Two instances in the same namespace will fight over reconciliation and corrupt both deployments. Plan namespaces accordingly.
 
 The architectural model to internalize:
@@ -80,7 +82,8 @@ The Operator ships in two OperatorHub channels and the choice is a governance de
 - **`stable-2.6`** — namespace-scoped. The Operator watches and deploys only into its own namespace. No cluster-admin required, smaller RBAC blast radius, lower resource overhead. This is the default recommendation.
 - **`stable-2.6-cluster-scoped`** — the Operator can manage AAP CRs across multiple namespaces and requires cluster-wide privileges.
 
-> [!tip] Default to namespace-scoped
+> [!TIP]
+> **Default to namespace-scoped**
 > Unless you have a concrete multi-tenant requirement where one platform team operates AAP instances for many app teams, choose namespace-scoped. It keeps AAP inside normal OCP project-admin boundaries.
 
 ### 1.3 Data tier: managed vs external PostgreSQL
@@ -92,7 +95,8 @@ Decide based on these constraints:
 - **Managed (Operator-deployed)** — fastest path, fewest moving parts, fine for growth/PoC. The database becomes a pod with a PVC; its durability is your PVC's durability.
 - **External** — required in practice for production, mandatory for serious DR. A DBA-owned, HA PostgreSQL cluster gives you backup tooling, point-in-time recovery, and a clean ownership boundary between the OCP team and the data team. In active-active multi-site designs, each site typically gets its own external HA PostgreSQL with **no cross-WAN replication** — isolation is deliberate to avoid corruption, and historical audit is offloaded to external log aggregation.
 
-> [!note] Plan connection budget early
+> [!NOTE]
+> **Plan connection budget early**
 > Controller, gateway, and EDA all open connections. If you go external, agree a `max_connections` ceiling with the DBA now — you will set `database.postgres_extra_settings` to match.
 
 ### 1.4 Storage
@@ -103,7 +107,8 @@ Three storage consumers, three different requirements:
 - **Database PVC** — if managed, size for growth of job events and ensure adequate IOPS; the tested growth baseline assumes ~3000 IOPS.
 - **Controller / EDA working storage** — projects, EE caches, Redis.
 
-> [!warning] RWX is the most common install-day blocker
+> [!WARNING]
+> **RWX is the most common install-day blocker**
 > A surprising number of failed first installs trace back to a default `StorageClass` that only offers `ReadWriteOnce`. Confirm RWX availability *before* you write the CR, or commit to S3 for the hub up front.
 
 ### 1.5 Networking, ingress, and the platform gateway
@@ -127,7 +132,8 @@ This is the decision that most distinguishes an OCP-native AAP design, and OCP/A
 
 **Automation mesh / execution nodes** — Receptor-based. Persistent execution nodes (and, across sites, peered mesh) let you reach targets that container groups cannot: network-isolated segments, edge locations, manufacturing/OT networks, or anywhere you need a single controlled entrypoint into a remote subnet. Mesh execution on OCP-hosted AAP has been supported since AAP 2.3.
 
-> [!tip] The answer is usually "both"
+> [!TIP]
+> **The answer is usually "both"**
 > A single controller can drive container groups for burstable, compute-heavy fleet work (patching hundreds of hosts) **and** mesh execution nodes for edge or air-gapped targets. Design the execution plane around *network topology and workload shape*, not around picking a winner.
 
 | Choose container groups when… | Choose mesh execution nodes when… |
@@ -164,7 +170,8 @@ Translate workload into the four numbers that actually size the platform:
 
 From those you derive **execution-plane** demand (sum of `automation-job` pod requests/limits) and **control-plane** demand (the static component pods). Both must fit inside (a) the AAP namespace `ResourceQuota` and (b) node `allocatable` capacity. A plan that omits this arithmetic produces pods that either won't schedule (`Pending`) or get `OOMKilled` under load — see Phase 4.
 
-> [!note] Requests vs limits is a real design choice on AAP
+> [!NOTE]
+> **Requests vs limits is a real design choice on AAP**
 > By default each AAP component sets resource **requests** but **no limits** — OCP schedules on requests, but pods can then consume unbounded CPU/RAM until the node is under pressure. For predictable multi-tenant clusters you will set explicit limits; for the database pod, Red Hat's own performance guidance **matches memory request and limit** to prevent OOM kills. Decide your stance per component.
 
 ### 1.10 Air-gapped considerations
@@ -299,7 +306,8 @@ The parameters you will most often set, and what each one binds:
 | `image_pull_secrets` | Platform | Private/mirrored registry access (air-gapped) |
 | EDA event-stream mTLS params | EDA | Mutual TLS for inbound event streams |
 
-> [!note] Job pods are sized separately
+> [!NOTE]
+> **Job pods are sized separately**
 > `ee_resource_requirements` sizes the controller's *internal* EE pods. The ephemeral `automation-job-*` pods spawned by a **container group** are sized by the **container group's pod spec override**, not by the CR. Plan and tune those independently (see §4.4).
 
 ### 2.4 Discovering every parameter
@@ -393,7 +401,8 @@ oc rsh -n aap deploy/aap-controller-task
 awx-manage list_instances        # mesh / instance topology and heartbeats
 ```
 
-> [!tip] Audit deliverable
+> [!TIP]
+> **Audit deliverable**
 > Produce a one-page *as-built vs as-designed* table. Every divergence is either an undocumented decision to ratify or a defect to fix. There is no third category.
 
 ---
@@ -465,7 +474,8 @@ oc adm top pods -n aap                        # live AAP component consumption
 | Limits set too low | `OOMKilled` job or component pods | Raise `limits`; re-derive per-fork memory |
 | Requests set too high | Pods `Pending` despite idle nodes | Right-size `requests` downward to real usage |
 
-> [!warning] Requests are promises, limits are ceilings
+> [!WARNING]
+> **Requests are promises, limits are ceilings**
 > A cluster can look "empty" in `oc adm top` and still refuse to schedule AAP pods, because OpenShift schedules on **requests**, not on live usage. When job pods sit `Pending` on an apparently idle cluster, audit `requests` against node `allocatable` before adding hardware.
 
 ### 4.4 Container group pressure
@@ -498,7 +508,8 @@ Stop guessing. Wire AAP into monitoring:
 - The AAP 2.6 **automation dashboard** gives ROI and job-outcome reporting natively.
 - Forward component and job logs to external aggregation (Splunk, Elastic, Loki) — essential for multi-site designs where no single AAP instance holds the full history.
 
-> [!tip] Capacity is a trend, not a snapshot
+> [!TIP]
+> **Capacity is a trend, not a snapshot**
 > A point-in-time `oc adm top` tells you almost nothing. Trend `remaining_capacity`, job queue depth, `automation-job` pod `Pending` time, and database connection count over weeks. The moment the trend line bends, you have your "needed vs existing" answer — with lead time to act on it.
 
 ---
@@ -517,5 +528,6 @@ For an architect already fluent in OCP and Ansible, AAP on OpenShift collapses t
 
 Get those right and AAP behaves like any other well-architected OCP workload: declarative, observable, and predictable. Manage the `AnsibleAutomationPlatform` CR in Git, reconcile it with your existing GitOps pipeline, and the platform that automates everything else finally gets automated itself.
 
-> [!note] Living document
+> [!NOTE]
+> **Living document**
 > AAP 2.7 (containerized-only, June 2026) removes the RPM installer entirely. Revisit the migration sections of this guide as 2.7 GAs and as your clusters move off 2.4/2.5.

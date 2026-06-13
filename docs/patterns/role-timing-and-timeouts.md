@@ -30,7 +30,8 @@ automatically (it is second in Ansible's config resolution order, right after `A
 task_timeout = 900
 ```
 
-> [!note] Precedence
+> [!NOTE]
+> **Precedence**
 > `ansible.cfg` is **below** environment variables. If `ANSIBLE_TASK_TIMEOUT` is set anywhere
 > (shell, EE image, or — on AAP — a Job Template variable), it overrides this file.
 > If `ANSIBLE_CONFIG` points at another file, this one is ignored entirely.
@@ -202,7 +203,8 @@ required for the timeout to actually bite (`poll: 0` would disable enforcement).
   poll: 15
 ```
 
-> [!tip] How the two timeouts interact
+> [!TIP]
+> **How the two timeouts interact**
 > The global `task_timeout = 900` is the **outer backstop** applied to every task. A task that
 > also sets `async` is bounded by **whichever limit is shorter** — so `t1`'s 30-second `async`
 > fires long before the 900-second global limit. This lets you keep the global safety net while
@@ -250,7 +252,8 @@ Bounded `chronyc` example for the original NTP-freeze case, with no task-level p
   ansible.builtin.shell: timeout 90 chronyc waitsync 10
 ```
 
-> [!note] Caveats
+> [!NOTE]
+> **Caveats**
 > - `timeout` is **GNU coreutils**, present on RHEL/Fedora and most Linux. It is not on stock
 >   macOS (there it is `gtimeout` via Homebrew coreutils) or minimal BusyBox images.
 > - This bounds the **command**, not the Ansible task overhead. The global `task_timeout` still

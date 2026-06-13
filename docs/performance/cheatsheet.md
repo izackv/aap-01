@@ -122,28 +122,19 @@ status: living-document
 
 ## Example — putting it all together
 
-`ansible.cfg` baked into the EE:
+`ansible.cfg` baked into the EE — full block and the fact-caching alternatives in [config-snippets §1](../../reference/config-snippets.md#1-execution-environment-ansiblecfg). The lines that move the needle:
 
 ```ini
 [defaults]
 strategy = free
 forks = 100
-gather_timeout = 30
-timeout = 30
 internal_poll_interval = 0.001
-host_key_checking = False
-display_skipped_hosts = False
-fact_caching = redis
-fact_caching_connection = aap-redis-svc:6379:1
-fact_caching_timeout = 7200
+fact_caching = redis           # or jsonfile — see the reference for the trade-off
 callbacks_enabled = profile_tasks, timer
-
 [ssh_connection]
 pipelining = True
-ssh_args = -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=15 -o PreferredAuthentications=publickey
+ssh_args = -o ControlMaster=auto -o ControlPersist=60s
 control_path_dir = /tmp/ansible-cp
-control_path = %(directory)s/%%h-%%r
-retries = 3
 ```
 
 Playbook header:
@@ -172,30 +163,18 @@ Job template:
 | Instance Group | `large-fleet` |
 | Concurrent Jobs | enabled (after testing) |
 
-Container group `pod_spec_override` (OpenShift):
+Container group `pod_spec_override` (OpenShift) — the single biggest lever for the freeze symptom. Full annotated spec in [config-snippets §2](../../reference/config-snippets.md#2-container-group-pod_spec_override). Essentials:
 
 ```yaml
-apiVersion: v1
-kind: Pod
 spec:
-  serviceAccountName: default
   automountServiceAccountToken: false
   nodeSelector: { aap-workload: execution }
-  tolerations:
-    - { key: aap-workload, operator: Equal, value: execution, effect: NoSchedule }
-  topologySpreadConstraints:
-    - maxSkew: 1
-      topologyKey: kubernetes.io/hostname
-      whenUnsatisfiable: ScheduleAnyway
-      labelSelector: { matchLabels: { aap.example.com/workload: large-fleet } }
   containers:
     - name: worker
       image: image-registry.openshift-image-registry.svc:5000/aap/custom-ee-rhel9:1.4.2
-      imagePullPolicy: IfNotPresent
-      args: ['ansible-runner', 'worker', '--private-data-dir=/runner']
       resources:
-        requests: { cpu: "1", memory: "4Gi" }
-        limits:   { cpu: "4", memory: "8Gi" }
+        requests: { cpu: "1", memory: "4Gi" }   # steady state
+        limits:   { cpu: "4", memory: "8Gi" }   # peak fact-gather — OOM ceiling
 ```
 
 Operator CR (AAP 2.5, abridged to performance-relevant fields):
@@ -227,30 +206,10 @@ spec:
       limits:   { cpu: "4", memory: "8Gi" }
     postgres_storage_class: io2-csi
     postgres_storage_requirements: { requests: { storage: 200Gi } }
-    postgres_extra_args:
-      - '-c'
-      - 'shared_buffers=2GB'
-      - '-c'
-      - 'work_mem=32MB'
-      - '-c'
-      - 'maintenance_work_mem=512MB'
-      - '-c'
-      - 'effective_cache_size=6GB'
-      - '-c'
-      - 'max_connections=1024'
-      - '-c'
-      - 'checkpoint_timeout=15min'
-      - '-c'
-      - 'checkpoint_completion_target=0.9'
-      - '-c'
-      - 'wal_compression=on'
-      - '-c'
-      - 'autovacuum_vacuum_scale_factor=0.05'
-      - '-c'
-      - 'autovacuum_analyze_scale_factor=0.02'
-      - '-c'
-      - 'synchronous_commit=off'
+    postgres_extra_args: [ ... ]   # full knob list in config-snippets §3
 ```
+
+> Full `postgres_extra_args` (and the `synchronous_commit=off` trade-off): [config-snippets §3](../../reference/config-snippets.md#3-postgresql-tuning).
 
 Gateway Route:
 
@@ -260,16 +219,7 @@ metadata:
     haproxy.router.openshift.io/timeout: 1h
 ```
 
-OS-level (VM nodes):
-
-```
-# /etc/security/limits.d/aap.conf
-awx soft nofile 65535
-awx hard nofile 65535
-# /etc/sysctl.d/99-aap.conf
-net.ipv4.ip_local_port_range = 15000 65000
-fs.file-max = 2097152
-```
+OS-level (VM nodes) — `nofile 65535`, `ip_local_port_range`, `fs.file-max`; full block in [config-snippets §4](../../reference/config-snippets.md#4-os-level-limits-vm-execution-nodes).
 
 Controller settings (UI → Settings → Jobs):
 
