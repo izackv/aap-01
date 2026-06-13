@@ -45,7 +45,7 @@ status: living-document
 
 When you set **Job Slicing = N** on a Job Template:
 
-1. The Controller creates a **Workflow Job** that contains **N child Job Templates**, each scoped to `1/N` of the inventory.
+1. The Controller creates a **Workflow Job** that contains **N child jobs** (one slice each), each scoped to `1/N` of the inventory.
 2. Each child is an **independent job** that gets queued, dispatched, and executed separately.
 3. Each child consumes capacity **as if it were a normal job** — the workflow doesn't reserve N slots up front.
 4. The workflow is "complete" when all N children finish (success or failure).
@@ -183,14 +183,17 @@ group_capacity_concurrent  = max_concurrent_jobs        (if set > 0)
                            = unbounded                  (otherwise)
 ```
 
-For traditional execution-node instance groups, `instance_capacity` is auto-computed per-node as:
+For traditional execution-node instance groups, `instance_capacity` is auto-computed per-node from a CPU-based and a memory-based figure:
 
 ```
-instance_capacity = min(
-    node_cpu  / SYSTEM_TASK_FORKS_CPU,
-    node_mem  / SYSTEM_TASK_FORKS_MEM
-)
+cpu_capacity = node_cpu_cores × SYSTEM_TASK_FORKS_CPU        # forks per core (default 4)
+mem_capacity = (node_mem_mb − reserve) / SYSTEM_TASK_FORKS_MEM   # MiB per fork (default 100)
+
+instance_capacity ≈ blend(cpu_capacity, mem_capacity)       # see note
 ```
+
+> [!NOTE]
+> Two simplifications above. (1) The memory figure reserves a chunk of RAM (~2 GiB) for the OS/agent before dividing. (2) AAP does **not** take a strict `min()` of the two — it interpolates between them using the instance's **`capacity_adjustment`** (the CPU/RAM slider in the UI). The takeaway is unchanged: capacity scales with **cores × `SYSTEM_TASK_FORKS_CPU`** and **RAM ÷ `SYSTEM_TASK_FORKS_MEM`**, whichever the blend favors. Confirm exact numbers with `awx-manage list_instances`.
 
 For **container groups on OpenShift**, the auto-computation does not apply the same way — capacity is whatever you set in `max_forks` and `max_concurrent_jobs`. Defaults are conservative; they're the reason "only 3 pods" is the canonical surprise.
 
@@ -404,6 +407,9 @@ Different shape — many small slices instead of few large ones. Often kinder to
 <a id="sec-6"></a>
 ## 6. Checking What's Actually Happening
 
+> [!NOTE]
+> The `curl` examples below use the controller path `/api/v2/...`, correct on **2.4** and when hitting the controller service directly. Through the **2.5 platform gateway** (the single FQDN), controller endpoints are proxied under **`/api/controller/v2/...`** — adjust the path accordingly. Confirm with `oc explain` / the gateway's API map on your cluster.
+
 ### 6.1 Right now — what's running, what's queued
 
 **UI**: Jobs → filter by Status (`Running`, `Pending`, `Waiting`).
@@ -525,7 +531,7 @@ If `pending > 0` and `consumed_capacity == capacity`, Gate 2 or Gate 3 is the bo
 | Slices run sequentially despite Slicing=N | "Allow Simultaneous" not enabled | Template setting |
 | `consumed_capacity > capacity` shown in `list_instance_groups` | Capacity over-subscribed; harmless transient or stale dispatcher state | `awx-manage run_dispatcher --reload` |
 | First batch fast, later batches slow | Image pull cache cold on new nodes | Pre-pull DaemonSet |
-| Concurrent jobs limit hit but `max_concurrent_jobs=0` | Gate 3 — global `MAX_FORKS` cap | Settings → Jobs |
+| Concurrent jobs limit hit but `max_concurrent_jobs=0` | Gate 2 — group `max_forks` exhausted (`floor(max_forks / (forks+1))` jobs), **not** the per-job `MAX_FORKS` | `awx-manage list_instance_groups` |
 
 ---
 
