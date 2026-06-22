@@ -14,7 +14,8 @@ def host(h):
     st = h.find("status")
     ports, ssh, banner = [], False, ""
     for p in h.findall("ports/port"):
-        if p.find("state").get("state") != "open":
+        state = p.find("state")
+        if state is None or state.get("state") != "open":
             continue
         ports.append(p.get("portid"))
         if p.get("portid") == "22":
@@ -40,4 +41,21 @@ def host(h):
         "vm_hint": vm,
     }
 
-print(json.dumps([host(h) for h in ET.parse(sys.argv[1]).getroot().findall("host")], indent=2))
+def main(argv):
+    if len(argv) < 2:
+        sys.stderr.write("usage: parse_nmap.py <nmap-xml-file>\n")
+        return 2
+    try:
+        root = ET.parse(argv[1]).getroot()
+    except (ET.ParseError, OSError) as e:
+        # Unreadable or malformed XML (e.g. nmap produced nothing): emit an empty
+        # record set so the playbook degrades to "no hosts" instead of crashing on
+        # from_json. The nmap return-code check in the playbook surfaces the real cause.
+        sys.stderr.write("parse_nmap: could not parse %r: %s\n" % (argv[1], e))
+        print("[]")
+        return 0
+    print(json.dumps([host(h) for h in root.findall("host")], indent=2))
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

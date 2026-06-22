@@ -1,5 +1,13 @@
 {#- One consolidated row per target. Facts win; nmap fills the failures. -#}
-{%- macro q(v) -%}"{{ (v if v is not none else '') | string | replace('"', '""') }}"{%- endmacro -%}
+{#- CSV-quote a value. Also defuses spreadsheet formula injection: a field whose
+    first char is = + - @ (or tab/CR) is prefixed with ' so Excel/Sheets treats it
+    as text, not a formula. ssh_banner/os/mac_vendor come from the scanned host and
+    are untrusted. Order: prefix THEN double quotes THEN wrap. -#}
+{%- macro q(v) -%}
+{%-   set s = (v if v is not none else '') | string -%}
+{%-   if s and s[0] in ['=', '+', '-', '@', '\t', '\r'] -%}{%- set s = "'" ~ s -%}{%- endif -%}
+"{{ s | replace('"', '""') }}"
+{%- endmacro -%}
 fqdn,ipv4,reachable,ssh_open,os,os_version,os_accuracy,detection_method,machine_type,virt_type,arch,kernel,uptime_days,cpu_cores,memory_mb,open_ports,mac,mac_vendor,ssh_banner,last_checked,error_class,error_msg
 {% for tgt in run_targets %}
 {%-   set hv = hostvars[tgt] | default({}) %}
@@ -36,7 +44,9 @@ fqdn,ipv4,reachable,ssh_open,os,os_version,os_accuracy,detection_method,machine_
 {%-     set os = ((n.nmap_os_family or n.nmap_os) if n else '') %}
 {%-     set osver = (n.nmap_os_gen if n else '') %}
 {%-     set acc = (n.nmap_os_accuracy if n else '') %}
-{%-     set method = ('nmap-guess' if (n and n.nmap_os) else 'none') %}
+{#-     nmap-guess: reachable + OS fingerprint | nmap-partial: reachable, no OS |
+        none: not reachable (or absent from the scan entirely). -#}
+{%-     set method = ('nmap-guess' if (n and n.nmap_os) else ('nmap-partial' if (n and n.reachable) else 'none')) %}
 {%-     set vtype = (n.vm_hint if (n and n.vm_hint) else '') %}
 {%-     set mtype = ('VM' if (n and n.vm_hint) else 'unknown') %}
 {%-     set arch = '' %}{% set kernel = '' %}{% set uptime = '' %}{% set cpu = '' %}{% set mem = '' %}

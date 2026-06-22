@@ -1,13 +1,14 @@
 ---
 # ===========================================================================
-# Fleet discovery -> one CSV on <mng_host>:/myshare/data/servers_info.csv
+# Fleet discovery -> one CSV on <mng_host>:/myshare/data/<inventory>_<date>_<jobid>_servers_info.csv
 #
 # Self-contained for AAP: no ansible.cfg and no static inventory required.
 #  * The host list comes from the AAP inventory attached to the job template
 #    (read here as groups['all']).
-#  * All connection tuning that would normally live in ansible.cfg is set as
-#    play vars below. The ONLY thing that can't be: 'forks' -> set it on the
-#    AAP job template's Forks field (or -f on the CLI).
+#  * Tunable knobs (mng_host, scan ports, nmap_opts, paths) live once in
+#    ../vars/main.yml; Phase 2 connection tuning is set as play vars. Override
+#    any knob with -e. The ONLY thing that can't be a var: 'forks' -> set it on
+#    the AAP job template's Forks field (or -f on the CLI).
 #  * The report host is defined with add_host, so it need NOT be in the
 #    AAP inventory.
 #
@@ -18,22 +19,16 @@
   hosts: localhost
   connection: local
   gather_facts: false
-  vars:
-    mng_host: mng01                # tools host: runs nmap AND stores the CSV
-    mng_host_address: ""           # leave EMPTY if the EE can reach mng_host by name
-                                   # (the usual case); set only if the name won't resolve
-    mng_host_user: ""              # set if mng_host needs a different SSH user than the fleet
-    scan_ports: "22,80,443,3389,5985,5986"
-    # Privileged tools host (root / CAP_NET_RAW). If mng_host can't run privileged,
-    # use:  nmap_opts: "-sT -sV --version-light"  (no -O: loses OS guess for no-SSH hosts)
-    nmap_opts: "-sS -O --osscan-guess -sV --version-light"
-    remote_targets_file: /tmp/discovery_targets.txt
-    remote_xml: /tmp/discovery_nmap.xml
-    local_xml: /tmp/discovery_nmap.xml
+  vars_files:
+    # mng_host, scan_ports, nmap_opts, working paths, report dest — defined once.
+    # Override any with -e (CLI) or an AAP extra var / survey (extra vars win).
+    - "{{ playbook_dir }}/../vars/main.yml"
   tasks:
     - name: Target list = the AAP inventory (minus control / tools host)
       ansible.builtin.set_fact:
-        run_targets: "{{ groups['all'] | default([]) | difference(['localhost', '127.0.0.1', mng_host]) }}"
+        # difference() is a set op: it already de-dupes exact repeats (but loses order).
+        # sort() restores a stable order so CSV rows are deterministic across runs.
+        run_targets: "{{ groups['all'] | default([]) | difference(['localhost', '127.0.0.1', mng_host]) | sort }}"
 
     - name: Fail early if the inventory is empty
       ansible.builtin.assert:
@@ -65,9 +60,23 @@
         -T4 --min-hostgroup 256 --max-retries 2 --host-timeout 30s
         -p {{ scan_ports }} -iL {{ remote_targets_file }} -oX {{ remote_xml }}
       become: true                 # escalates on the tools host, not the EE
+      register: nmap_run
       changed_when: false
-      failed_when: false
+      failed_when: false           # capture rc ourselves for a clearer message (next task)
       delegate_to: "{{ mng_host }}"
+
+    - name: Fail clearly if nmap could not run on the tools host
+      # nmap returns 0 for a normal scan even when hosts are down; a non-zero rc
+      # means a real problem (binary missing, no root for -sS/-O, bad args, can't
+      # write the XML). Without this you'd only find out at the confusing fetch step.
+      ansible.builtin.assert:
+        that: (nmap_run.rc | default(1)) == 0
+        success_msg: "nmap completed on {{ mng_host }}."
+        fail_msg: >-
+          nmap failed on {{ mng_host }} (rc={{ nmap_run.rc | default('n/a') }}).
+          Check that nmap is installed, that become/root is available for -sS/-O
+          (or switch nmap_opts to '-sT -sV --version-light'), and that {{ remote_xml }}
+          is writable. Detail: {{ (nmap_run.stderr | default('')) | trim }} {{ nmap_run.msg | default('') }}
 
     - name: Pull the nmap XML back to the controller
       ansible.builtin.fetch:
@@ -94,14 +103,21 @@
       ansible.builtin.set_fact:
         nmap_by_key: "{{ dict(keys | zip(vals)) }}"
 
-    - name: Hand up-and-22-open hosts to Phase 2 (dead / no-SSH are NOT added)
+    - name: Hand up-and-22-open hosts to Phase 2 (named by the ORIGINAL inventory entry)
+      # Name the Phase-2 host by the run_targets string, NOT nmap's fqdn. nmap returns
+      # a PTR name for IP targets, so naming by fqdn would store facts under the PTR
+      # while Phase 3 looks them up by the inventory entry (the IP) — and silently miss
+      # them. ansible_host carries the scanned IP so the SSH connection still hits it.
       ansible.builtin.add_host:
-        name: "{{ item.fqdn }}"
+        name: "{{ item }}"
         groups: ssh_candidates
-        ansible_host: "{{ item.ipv4 }}"
-      loop: "{{ run_nmap_records | selectattr('ssh_open') | list }}"
+        ansible_host: "{{ nmap_by_key[item].ipv4 | default(item, true) }}"
+      loop: "{{ run_targets }}"
       loop_control:
-        label: "{{ item.fqdn }}"
+        label: "{{ item }}"
+      when:
+        - item in nmap_by_key
+        - nmap_by_key[item].ssh_open | default(false)
       changed_when: false
 
     - name: Split
@@ -168,14 +184,24 @@
   hosts: localhost
   connection: local
   gather_facts: false
-  vars:
-    mng_host: mng01               # same tools host that ran nmap
-    report_dir: /myshare/data
-    report_file: servers_info.csv
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"   # same mng_host, report_dir, report_file
   tasks:
     - name: Timestamp for last_checked (UTC)
       ansible.builtin.set_fact:
         run_timestamp: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+    - name: Build the report filename (<inventory>_<date>_<jobid>_<report_file>)
+      # Inventory name and job id come from AAP's injected job vars (awx_*/tower_*);
+      # both fall back to placeholders for local CLI runs. The inventory name is
+      # sanitized to filename-safe chars. Date is the UTC day from run_timestamp;
+      # the unique job id disambiguates multiple runs on the same day.
+      vars:
+        # `or` chain (not default()) so a defined-but-EMPTY name also falls through.
+        _inv: "{{ (awx_inventory_name | default('') or tower_inventory_name | default('') or 'inventory') | regex_replace('[^A-Za-z0-9._-]', '_') }}"
+        _jobid: "{{ awx_job_id | default(tower_job_id | default('local')) }}"
+      ansible.builtin.set_fact:
+        report_name: "{{ _inv }}_{{ run_timestamp[:10] }}_{{ _jobid }}_{{ report_file }}"
 
     - name: Ensure report directory exists on {{ mng_host }}
       ansible.builtin.file:
@@ -187,7 +213,7 @@
     - name: Write the consolidated CSV
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../templates/report.csv.j2"
-        dest: "{{ report_dir }}/{{ report_file }}"
+        dest: "{{ report_dir }}/{{ report_name }}"
         mode: "0644"
         trim_blocks: true
         lstrip_blocks: true
@@ -195,4 +221,4 @@
 
     - name: Done
       ansible.builtin.debug:
-        msg: "Report written to {{ mng_host }}:{{ report_dir }}/{{ report_file }}"
+        msg: "Report written to {{ mng_host }}:{{ report_dir }}/{{ report_name }}"

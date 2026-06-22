@@ -1,0 +1,26 @@
+---
+# Single source of truth for the discover.yml knobs, shared by Phase 1 and Phase 3
+# (play vars don't cross plays, so they live here once instead of being duplicated).
+# Override any of these per run with -e on the CLI, or an AAP job-template extra var
+# / survey field — extra vars take precedence over vars_files.
+
+# Tools host: runs the privileged nmap scan AND stores the final CSV.
+mng_host: mng01
+mng_host_address: ""     # leave EMPTY if the EE can reach mng_host by name (the usual case)
+mng_host_user: ""        # set only if mng_host needs a different SSH user than the fleet
+
+# nmap scan
+scan_ports: "22,80,443,3389,5985,5986"
+# Privileged scan (needs root / CAP_NET_RAW on mng_host). If it can't run privileged,
+# set:  nmap_opts: "-sT -sV --version-light"  (drops -O: loses the OS guess for no-SSH hosts)
+nmap_opts: "-sS -O --osscan-guess -sV --version-light"
+
+# Working files (targets list + nmap XML live on mng_host; XML is fetched to the EE)
+remote_targets_file: /tmp/discovery_targets.txt
+remote_xml: /tmp/discovery_nmap.xml
+local_xml: /tmp/discovery_nmap.xml
+
+# Report destination on mng_host. The written filename is prefixed at runtime with
+# "<inventory>_<date>_<jobid>_" (see Phase 3), so report_file is the stable suffix.
+report_dir: /myshare/data
+report_file: servers_info.csv
