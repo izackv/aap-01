@@ -114,12 +114,11 @@
 
 - name: "Phase 2 - authoritative facts (only the SSH-reachable subset)"
   hosts: ssh_candidates
-  gather_facts: true
-  gather_subset: ["!all", "min", "virtual", "hardware", "network"]
-  gather_timeout: 15              # was ansible.cfg gather_timeout
+  gather_facts: false             # gather EXPLICITLY (as a setup task) so the
+                                  # failure can be registered. The implicit
+                                  # gather_facts can't be captured - that's why
+                                  # we previously only had a yes/no signal.
   strategy: free
-  ignore_unreachable: true
-  ignore_errors: true
   vars:                           # everything here was ansible.cfg
     ansible_timeout: 5                                     # connect timeout
     ansible_pipelining: true
@@ -127,7 +126,42 @@
     ansible_python_interpreter: auto_silent
     # Adds our options on top of Ansible's default ControlMaster/Persist ssh_args.
     ansible_ssh_common_args: "-o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-  tasks: []
+  tasks:
+    - name: Gather authoritative facts (don't abort on failure)
+      ansible.builtin.setup:
+        gather_subset: ["!all", "min", "virtual", "hardware", "network"]
+        gather_timeout: 15        # was ansible.cfg gather_timeout
+      register: fact_result
+      ignore_errors: true
+      ignore_unreachable: true
+
+    - name: Capture a one-line, classified error for hosts whose facts failed
+      when: fact_result.failed | default(false) or fact_result.unreachable | default(false)
+      vars:
+        # stderr usually carries the real Python traceback; fall back to msg, then stdout.
+        _msg:    "{{ fact_result.msg | default('') }}"
+        _stderr: "{{ fact_result.module_stderr | default('') }}"
+        _stdout: "{{ fact_result.module_stdout | default('') }}"
+        _src:    "{{ _stderr if (_stderr | trim) else (_msg if (_msg | trim) else _stdout) }}"
+        _flat:   "{{ _src | regex_replace('\\s+', ' ') | trim }}"
+        # Lowercased haystack for keyword classification (order = priority).
+        _blob_l: "{{ (_msg ~ ' ' ~ _stderr ~ ' ' ~ _stdout) | lower }}"
+      ansible.builtin.set_fact:
+        fact_error_class: >-
+          {%- if 'permission denied' in _blob_l -%}auth-failed
+          {%- elif 'timed out' in _blob_l or 'timeout' in _blob_l -%}timeout
+          {%- elif 'syntaxerror' in _blob_l -%}python-version
+          {%- elif 'modulenotfounderror' in _blob_l or 'importerror' in _blob_l or 'failed to import' in _blob_l -%}python-deps
+          {%- elif ('python' in _blob_l and ('not found' in _blob_l or 'no such file' in _blob_l)) or 'failed to find' in _blob_l or 'discovered_interpreter' in _blob_l -%}python-missing
+          {%- elif 'unsupported locale' in _blob_l -%}locale
+          {%- elif 'sudo' in _blob_l or 'privilege escalation' in _blob_l -%}privilege-escalation
+          {%- elif 'no route to host' in _blob_l or 'connection refused' in _blob_l or 'network is unreachable' in _blob_l -%}network-unreachable
+          {%- elif fact_result.unreachable | default(false) -%}unreachable
+          {%- elif 'module failure' in _blob_l -%}module-failure
+          {%- else -%}error
+          {%- endif -%}
+        # Keep the TAIL: Python puts the real exception on the last line.
+        fact_error_msg: "{{ (_flat[-300:] if (_flat | length) > 300 else _flat) | default('fact gathering failed (no detail captured)', true) }}"
 
 
 - name: "Phase 3 - merge & write one CSV to the tools host"

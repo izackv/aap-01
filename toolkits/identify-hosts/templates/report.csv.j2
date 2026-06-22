@@ -1,6 +1,6 @@
 {#- One consolidated row per target. Facts win; nmap fills the failures. -#}
 {%- macro q(v) -%}"{{ (v if v is not none else '') | string | replace('"', '""') }}"{%- endmacro -%}
-fqdn,ipv4,reachable,ssh_open,os,os_version,os_accuracy,detection_method,machine_type,virt_type,arch,kernel,uptime_days,cpu_cores,memory_mb,open_ports,mac,mac_vendor,ssh_banner,last_checked
+fqdn,ipv4,reachable,ssh_open,os,os_version,os_accuracy,detection_method,machine_type,virt_type,arch,kernel,uptime_days,cpu_cores,memory_mb,open_ports,mac,mac_vendor,ssh_banner,last_checked,error_class,error_msg
 {% for tgt in run_targets %}
 {%-   set hv = hostvars[tgt] | default({}) %}
 {%-   set has_facts = (hv.ansible_distribution is defined) %}
@@ -26,6 +26,7 @@ fqdn,ipv4,reachable,ssh_open,os,os_version,os_accuracy,detection_method,machine_
 {%-     set open_ports = ((nd.open_ports | join(';')) if nd else '') %}
 {%-     set mac = (nd.mac if nd else '') %}{% set mac_vendor = (nd.mac_vendor if nd else '') %}
 {%-     set banner = (nd.ssh_banner if nd else '') %}
+{%-     set err_class = '' %}{%- set err_msg = '' %}
 {%-   else %}
 {%-     set n = nmap_by_key[tgt] if tgt in nmap_by_key else none %}
 {%-     set fqdn = (n.fqdn if (n and n.fqdn) else tgt) %}
@@ -43,6 +44,10 @@ fqdn,ipv4,reachable,ssh_open,os,os_version,os_accuracy,detection_method,machine_
 {%-     set mac = (n.mac if n else '') %}
 {%-     set mac_vendor = (n.mac_vendor if n else '') %}
 {%-     set banner = (n.ssh_banner if n else '') %}
+{#-     Port 22 was open but facts didn't land -> surface the captured error.
+        No-SSH hosts stay blank (not falsely "errored"). -#}
+{%-     set err_class = (hv.fact_error_class | default('')) if (n and n.ssh_open) else '' %}
+{%-     set err_msg   = (hv.fact_error_msg   | default('')) if (n and n.ssh_open) else '' %}
 {%-   endif %}
-{{ q(fqdn) }},{{ q(ip) }},{{ q(reachable) }},{{ q(ssh_open) }},{{ q(os) }},{{ q(osver) }},{{ q(acc) }},{{ q(method) }},{{ q(mtype) }},{{ q(vtype) }},{{ q(arch) }},{{ q(kernel) }},{{ q(uptime) }},{{ q(cpu) }},{{ q(mem) }},{{ q(open_ports) }},{{ q(mac) }},{{ q(mac_vendor) }},{{ q(banner) }},{{ q(run_timestamp) }}
+{{ q(fqdn) }},{{ q(ip) }},{{ q(reachable) }},{{ q(ssh_open) }},{{ q(os) }},{{ q(osver) }},{{ q(acc) }},{{ q(method) }},{{ q(mtype) }},{{ q(vtype) }},{{ q(arch) }},{{ q(kernel) }},{{ q(uptime) }},{{ q(cpu) }},{{ q(mem) }},{{ q(open_ports) }},{{ q(mac) }},{{ q(mac_vendor) }},{{ q(banner) }},{{ q(run_timestamp) }},{{ q(err_class) }},{{ q(err_msg) }}
 {% endfor %}
