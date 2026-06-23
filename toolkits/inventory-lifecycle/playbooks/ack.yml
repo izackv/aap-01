@@ -1,0 +1,92 @@
+---
+# Insert/extend a per-host signal mute, or list/remove acks. See SPEC §5.4, §7.
+
+- name: Inventory lifecycle — register mng_host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"
+  tasks:
+    - name: Define mng_host
+      ansible.builtin.add_host:
+        name: "{{ lifecycle_mng_host }}"
+        groups: lifecycle_runtime
+        ansible_connection: ssh
+        ansible_host: "{{ lifecycle_mng_host_address | default(omit) }}"
+        ansible_user: "{{ lifecycle_mng_host_user | default(omit) }}"
+      changed_when: false
+
+- name: Inventory lifecycle — ack ops on mng_host
+  hosts: lifecycle_runtime
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"
+  vars:
+    db_path: "{{ db_path | default(lifecycle_db_path) }}"
+    deploy_dir: "{{ lifecycle_deploy_dir }}"
+    list_mode:   "{{ list   | default(false) | bool }}"
+    remove_mode: "{{ remove | default(false) | bool }}"
+    fqdn_arg: "{{ fqdn | default('') }}"
+    signal_arg: "{{ signal | default('') }}"
+    days_arg: "{{ days | default(0) | int }}"
+    reason_arg: "{{ reason | default('') }}"
+    inventory_arg: "{{ inventory | default('') }}"
+    added_by_arg: "{{ added_by | default('') }}"
+
+  tasks:
+    - name: Push lifecycle Python files
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/"
+        dest: "{{ deploy_dir }}/"
+        mode: '0644'
+
+    - name: Run ack-list
+      ansible.builtin.command:
+        argv: "{{
+          ['python3', deploy_dir ~ '/lifecycle_db.py', '--db', db_path, 'ack-list']
+          + (['--inventory', inventory_arg] if inventory_arg else [])
+        }}"
+      register: ack_out
+      changed_when: false
+      when: list_mode
+
+    - name: Run ack-remove
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ deploy_dir }}/lifecycle_db.py"
+          - --db
+          - "{{ db_path }}"
+          - ack-remove
+          - --fqdn
+          - "{{ fqdn_arg }}"
+          - --signal
+          - "{{ signal_arg }}"
+          - --inventory
+          - "{{ inventory_arg }}"
+      register: ack_out_remove
+      changed_when: "'removed' in ack_out_remove.stdout"
+      when: remove_mode and not list_mode
+
+    - name: Run ack-insert
+      ansible.builtin.command:
+        argv: "{{
+          [
+            'python3', deploy_dir ~ '/lifecycle_db.py', '--db', db_path, 'ack',
+            '--fqdn', fqdn_arg,
+            '--signal', signal_arg,
+            '--days', days_arg | string,
+            '--reason', reason_arg,
+            '--inventory', inventory_arg,
+          ] + (['--added-by', added_by_arg] if added_by_arg else [])
+        }}"
+      register: ack_out_insert
+      changed_when: "'acked' in ack_out_insert.stdout"
+      when: not list_mode and not remove_mode
+
+    - name: Show output
+      ansible.builtin.debug:
+        msg: "{{ (ack_out.stdout_lines if list_mode
+                  else (ack_out_remove.stdout_lines if remove_mode
+                        else ack_out_insert.stdout_lines)) }}"

@@ -1,0 +1,8 @@
+# Hosts that should NEVER be flagged for removal. Source of truth — git-tracked.
+# Schema (only fqdn is required; see SPEC §8 for full semantics):
+#   fqdn           — FQDN; lowercased on load
+#   inventory      — empty matches all inventories; non-empty restricts to that one
+#   reason         — free text shown in reports and PR review (recommended)
+#   owner          — team/person to ping
+#   ack_until      — YYYY-MM-DD; past this date a warning is logged
+fqdn,inventory,reason,owner,ack_until

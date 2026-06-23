@@ -1,0 +1,10 @@
+---
+# Optional per-inventory overrides. Empty by default. Pull this file into a
+# playbook with an extra vars_files entry when you need it.
+#
+# Example:
+#   prod-linux:
+#     lifecycle_silent_threshold_days: 14
+#     lifecycle_max_remove_per_run_pct: 2
+#   qa-linux:
+#     lifecycle_silent_threshold_days: 60

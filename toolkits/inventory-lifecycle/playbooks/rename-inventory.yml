@@ -1,0 +1,58 @@
+---
+# Migrate DB state from one inventory name to another. See SPEC §5.6.
+# Default is preview (apply=false). Pass -e apply=true to actually migrate.
+
+- name: Inventory lifecycle — register mng_host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"
+  tasks:
+    - name: Define mng_host
+      ansible.builtin.add_host:
+        name: "{{ lifecycle_mng_host }}"
+        groups: lifecycle_runtime
+        ansible_connection: ssh
+        ansible_host: "{{ lifecycle_mng_host_address | default(omit) }}"
+        ansible_user: "{{ lifecycle_mng_host_user | default(omit) }}"
+      changed_when: false
+
+- name: Inventory lifecycle — rename inventory in DB
+  hosts: lifecycle_runtime
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"
+  vars:
+    db_path: "{{ db_path | default(lifecycle_db_path) }}"
+    deploy_dir: "{{ lifecycle_deploy_dir }}"
+    from_name: "{{ from }}"
+    to_name: "{{ to }}"
+    apply_flag: "{{ apply | default(false) | bool }}"
+
+  tasks:
+    - name: Require from and to
+      ansible.builtin.fail:
+        msg: "pass -e from=<old-name> -e to=<new-name>"
+      when: (from_name | default('') | length == 0) or (to_name | default('') | length == 0)
+
+    - name: Push lifecycle Python files
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/"
+        dest: "{{ deploy_dir }}/"
+        mode: '0644'
+
+    - name: Run rename-inventory
+      ansible.builtin.command:
+        argv: "{{
+          [
+            'python3', deploy_dir ~ '/lifecycle_db.py', '--db', db_path,
+            'rename-inventory', '--from', from_name, '--to', to_name,
+          ] + (['--apply'] if apply_flag else [])
+        }}"
+      register: rn_out
+      changed_when: apply_flag
+
+    - name: Show output
+      ansible.builtin.debug:
+        var: rn_out.stdout_lines

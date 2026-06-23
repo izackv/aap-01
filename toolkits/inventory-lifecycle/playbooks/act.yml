@@ -1,0 +1,70 @@
+---
+# Disable (default) or delete hosts in AAP per the most recent to_remove.csv.
+# Default is DRY-RUN; pass -e apply=true to actually call AAP. See SPEC §5.3.
+
+- name: Inventory lifecycle — register mng_host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"
+  tasks:
+    - name: Define mng_host
+      ansible.builtin.add_host:
+        name: "{{ lifecycle_mng_host }}"
+        groups: lifecycle_runtime
+        ansible_connection: ssh
+        ansible_host: "{{ lifecycle_mng_host_address | default(omit) }}"
+        ansible_user: "{{ lifecycle_mng_host_user | default(omit) }}"
+      changed_when: false
+
+- name: Inventory lifecycle — act on mng_host
+  hosts: lifecycle_runtime
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"
+  vars:
+    db_path: "{{ db_path | default(lifecycle_db_path) }}"
+    report_dir: "{{ report_dir | default(lifecycle_report_dir) }}"
+    inventory_name: "{{ inventory }}"     # required
+    aap_url: "{{ aap_url | default(lifecycle_aap_url) }}"
+    aap_token: "{{ aap_token | default(lifecycle_aap_token) }}"
+    apply_flag: "{{ apply | default(false) | bool }}"
+    mode: "{{ mode | default('disable') }}"
+    csv_glob: "{{ csv_glob | default(lifecycle_csv_glob) }}"
+    deploy_dir: "{{ lifecycle_deploy_dir }}"
+
+  tasks:
+    - name: Require an inventory
+      ansible.builtin.fail:
+        msg: "pass -e inventory=<name>"
+      when: inventory_name | length == 0
+
+    - name: Push lifecycle Python files
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/"
+        dest: "{{ deploy_dir }}/"
+        mode: '0644'
+
+    - name: Run act
+      ansible.builtin.command:
+        argv: "{{
+          [
+            'python3', deploy_dir ~ '/act.py',
+            '--db', db_path,
+            '--report-dir', report_dir,
+            '--inventory', inventory_name,
+            '--mode', mode,
+            '--keep-csv-days', lifecycle_keep_csv_days | string,
+            '--csv-glob', csv_glob,
+            '--max-remove-per-run-abs', lifecycle_max_remove_per_run_abs | string,
+          ] + (['--apply', '--aap-url', aap_url, '--aap-token', aap_token] if apply_flag else [])
+        }}"
+      register: act_out
+      changed_when: apply_flag and ('OK ' in act_out.stdout or 'REENABLE' in act_out.stdout)
+      failed_when: act_out.rc not in [0, 3]
+      no_log: "{{ apply_flag }}"          # don't echo the token in the argv
+
+    - name: Show act output
+      ansible.builtin.debug:
+        var: act_out.stdout_lines

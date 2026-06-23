@@ -1,0 +1,57 @@
+---
+# Mark an inventory retired — evaluate.yml will skip it from now on.
+# See SPEC §5.7. Default preview; -e apply=true to commit.
+
+- name: Inventory lifecycle — register mng_host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"
+  tasks:
+    - name: Define mng_host
+      ansible.builtin.add_host:
+        name: "{{ lifecycle_mng_host }}"
+        groups: lifecycle_runtime
+        ansible_connection: ssh
+        ansible_host: "{{ lifecycle_mng_host_address | default(omit) }}"
+        ansible_user: "{{ lifecycle_mng_host_user | default(omit) }}"
+      changed_when: false
+
+- name: Inventory lifecycle — retire inventory in DB
+  hosts: lifecycle_runtime
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"
+  vars:
+    db_path: "{{ db_path | default(lifecycle_db_path) }}"
+    deploy_dir: "{{ lifecycle_deploy_dir }}"
+    inventory_name: "{{ inventory }}"
+    apply_flag: "{{ apply | default(false) | bool }}"
+
+  tasks:
+    - name: Require an inventory
+      ansible.builtin.fail:
+        msg: "pass -e inventory=<name>"
+      when: inventory_name | default('') | length == 0
+
+    - name: Push lifecycle Python files
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/"
+        dest: "{{ deploy_dir }}/"
+        mode: '0644'
+
+    - name: Run retire-inventory
+      ansible.builtin.command:
+        argv: "{{
+          [
+            'python3', deploy_dir ~ '/lifecycle_db.py', '--db', db_path,
+            'retire-inventory', '--inventory', inventory_name,
+          ] + (['--apply'] if apply_flag else [])
+        }}"
+      register: rt_out
+      changed_when: apply_flag
+
+    - name: Show output
+      ansible.builtin.debug:
+        var: rt_out.stdout_lines

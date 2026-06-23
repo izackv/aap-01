@@ -1,0 +1,6 @@
+---
+# Local-dev convenience: ingest → evaluate, then stop. No act. Useful for
+# testing the rule engine on a captured CSV directory.
+
+- ansible.builtin.import_playbook: ingest.yml
+- ansible.builtin.import_playbook: evaluate.yml

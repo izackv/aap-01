@@ -1,0 +1,61 @@
+---
+# Re-enable hosts that were disabled by an earlier act.yml run. See SPEC §5.5.
+
+- name: Inventory lifecycle — register mng_host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"
+  tasks:
+    - name: Define mng_host
+      ansible.builtin.add_host:
+        name: "{{ lifecycle_mng_host }}"
+        groups: lifecycle_runtime
+        ansible_connection: ssh
+        ansible_host: "{{ lifecycle_mng_host_address | default(omit) }}"
+        ansible_user: "{{ lifecycle_mng_host_user | default(omit) }}"
+      changed_when: false
+
+- name: Inventory lifecycle — restore on mng_host
+  hosts: lifecycle_runtime
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"
+  vars:
+    db_path: "{{ db_path | default(lifecycle_db_path) }}"
+    deploy_dir: "{{ lifecycle_deploy_dir }}"
+    from_actions_csv: "{{ from_actions_csv }}"   # required
+    apply_flag: "{{ apply | default(false) | bool }}"
+    aap_url: "{{ aap_url | default(lifecycle_aap_url) }}"
+    aap_token: "{{ aap_token | default(lifecycle_aap_token) }}"
+
+  tasks:
+    - name: Require from_actions_csv
+      ansible.builtin.fail:
+        msg: "pass -e from_actions_csv=<path>"
+      when: from_actions_csv | default('') | length == 0
+
+    - name: Push lifecycle Python files
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/"
+        dest: "{{ deploy_dir }}/"
+        mode: '0644'
+
+    - name: Run restore
+      ansible.builtin.command:
+        argv: "{{
+          [
+            'python3', deploy_dir ~ '/restore.py',
+            '--db', db_path,
+            '--from-actions-csv', from_actions_csv,
+          ] + (['--apply', '--aap-url', aap_url, '--aap-token', aap_token] if apply_flag else [])
+        }}"
+      register: restore_out
+      changed_when: apply_flag and 'OK ' in restore_out.stdout
+      failed_when: restore_out.rc not in [0, 3]
+      no_log: "{{ apply_flag }}"
+
+    - name: Show output
+      ansible.builtin.debug:
+        var: restore_out.stdout_lines

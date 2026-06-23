@@ -1,0 +1,40 @@
+---
+# Single source of truth for tunable knobs. Override per-run with -e
+# or per-inventory by sourcing vars/inventories.yml as well.
+# See README "Tunable knobs" and SPEC §3 for semantics.
+
+# Where the work happens (matches identify-hosts pattern)
+lifecycle_mng_host: mng01
+# Set lifecycle_mng_host_address only if the short name above won't resolve
+# from the EE; same for lifecycle_mng_host_user if it needs a different SSH user.
+# lifecycle_mng_host_address:
+# lifecycle_mng_host_user:
+
+# Where Python lives on mng_host (synced from the EE on every run)
+lifecycle_deploy_dir: /tmp/inventory-lifecycle
+
+# Storage paths on mng_host
+lifecycle_db_path:        /myshare/data/lifecycle/state.sqlite
+lifecycle_report_dir:     /myshare/data/lifecycle/reports
+lifecycle_csv_glob:       /myshare/data/*_servers_info.csv
+lifecycle_allowlist_csv:  "{{ playbook_dir }}/../vars/allowlist.csv"
+
+# AAP API (used by act.yml, restore.yml, add-hosts.yml).
+# Strongly recommend wiring these to an AAP credential, not in clear text here.
+lifecycle_aap_url:   ""
+lifecycle_aap_token: ""
+
+# Rule thresholds (calendar days unless noted)
+lifecycle_silent_threshold_days: 30
+lifecycle_returned_threshold_days: 14
+lifecycle_intermittent_min_flips: 4
+lifecycle_intermittent_window_days: 30
+
+# Sanity gates (SPEC §3.4)
+lifecycle_max_remove_per_run_pct: 5
+lifecycle_max_remove_per_run_abs: 50
+lifecycle_min_run_success_pct: 85
+lifecycle_min_successful_runs_before_action: 5
+
+# CSV evidence retention
+lifecycle_keep_csv_days: 90

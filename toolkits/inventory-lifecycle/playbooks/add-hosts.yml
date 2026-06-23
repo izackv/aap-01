@@ -1,0 +1,76 @@
+---
+# Add fqdns to an AAP inventory, printing any prior lifecycle history first.
+# See SPEC §5.8 and README "Adding hosts back (re-add script)".
+
+- name: Inventory lifecycle — register mng_host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"
+  tasks:
+    - name: Define mng_host
+      ansible.builtin.add_host:
+        name: "{{ lifecycle_mng_host }}"
+        groups: lifecycle_runtime
+        ansible_connection: ssh
+        ansible_host: "{{ lifecycle_mng_host_address | default(omit) }}"
+        ansible_user: "{{ lifecycle_mng_host_user | default(omit) }}"
+      changed_when: false
+
+- name: Inventory lifecycle — add-hosts on mng_host
+  hosts: lifecycle_runtime
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/main.yml"
+  vars:
+    db_path: "{{ db_path | default(lifecycle_db_path) }}"
+    deploy_dir: "{{ lifecycle_deploy_dir }}"
+    inventory_name: "{{ inventory }}"      # required
+    aap_url: "{{ aap_url | default(lifecycle_aap_url) }}"
+    aap_token: "{{ aap_token | default(lifecycle_aap_token) }}"
+    apply_flag: "{{ apply | default(false) | bool }}"
+    fqdn_arg: "{{ fqdn | default('') }}"
+    from_file_arg: "{{ from_file | default('') }}"
+    no_reenable: "{{ no_reenable | default(false) | bool }}"
+
+  tasks:
+    - name: Require an inventory
+      ansible.builtin.fail:
+        msg: "pass -e inventory=<name>"
+      when: inventory_name | length == 0
+
+    - name: Require fqdn or from_file
+      ansible.builtin.fail:
+        msg: "pass exactly one of -e fqdn=... or -e from_file=..."
+      when: (fqdn_arg | length == 0) and (from_file_arg | length == 0)
+
+    - name: Push lifecycle Python files
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/"
+        dest: "{{ deploy_dir }}/"
+        mode: '0644'
+
+    - name: Run add-hosts
+      ansible.builtin.command:
+        argv: "{{
+          [
+            'python3', deploy_dir ~ '/add_hosts.py',
+            '--inventory', inventory_name,
+            '--aap-url', aap_url,
+            '--aap-token', aap_token,
+            '--db-path', db_path,
+          ]
+          + (['--fqdn', fqdn_arg] if fqdn_arg else [])
+          + (['--from-file', from_file_arg] if from_file_arg else [])
+          + (['--no-reenable'] if no_reenable else [])
+          + ([] if apply_flag else ['--dry-run'])
+        }}"
+      register: addh_out
+      changed_when: apply_flag and ('ADD ' in addh_out.stdout or 'REENABLE' in addh_out.stdout)
+      failed_when: addh_out.rc not in [0, 3]
+      no_log: "{{ apply_flag }}"
+
+    - name: Show output
+      ansible.builtin.debug:
+        var: addh_out.stdout_lines
