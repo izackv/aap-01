@@ -2,11 +2,13 @@
 {#- CSV-quote a value. Also defuses spreadsheet formula injection: a field whose
     first char is = + - @ (or tab/CR) is prefixed with ' so Excel/Sheets treats it
     as text, not a formula. ssh_banner/os/mac_vendor come from the scanned host and
-    are untrusted. Order: prefix THEN double quotes THEN wrap. -#}
+    are untrusted. We also pre-strip the two chars that can split a row when Excel
+    mis-handles RFC 4180 quoting: " -> ' and , -> ; (err_msg from Python tracebacks
+    is the usual offender). Order: prefix THEN sanitize THEN wrap. -#}
 {%- macro q(v) -%}
 {%-   set s = (v if v is not none else '') | string -%}
 {%-   if s and s[0] in ['=', '+', '-', '@', '\t', '\r'] -%}{%- set s = "'" ~ s -%}{%- endif -%}
-"{{ s | replace('"', '""') }}"
+"{{ s | replace('"', "'") | replace(',', ';') }}"
 {%- endmacro -%}
 fqdn,ipv4,reachable,ssh_open,os,os_version,os_accuracy,detection_method,machine_type,virt_type,arch,kernel,uptime_days,cpu_cores,memory_mb,open_ports,mac,mac_vendor,ssh_banner,last_checked,error_class,error_msg
 {% for tgt in run_targets %}
