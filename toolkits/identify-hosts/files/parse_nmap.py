@@ -12,6 +12,10 @@ def host(h):
     user = next((x.get("name") for x in hns if x.get("type") == "user"), "")
     ptr = next((x.get("name") for x in hns if x.get("type") == "PTR"), "")
     st = h.find("status")
+    # nmap --reason puts WHY the host got its state here: echo-reply / syn-ack
+    # on up hosts, no-response / host-timeout / admin-prohibited on down ones.
+    # Empty when the scan was run without --reason.
+    status_reason = st.get("reason", "") if st is not None else ""
     ports, ssh, banner = [], False, ""
     for p in h.findall("ports/port"):
         state = p.find("state")
@@ -32,6 +36,7 @@ def host(h):
         "ipv4": ip,
         "fqdn": user or ptr or ip,
         "reachable": st is not None and st.get("state") == "up",
+        "status_reason": status_reason,
         "ssh_open": ssh, "ssh_banner": banner, "open_ports": ports,
         "mac": a["mac"].get("addr", "") if "mac" in a else "", "mac_vendor": vendor,
         "nmap_os": m.get("name", "") if m is not None else "",

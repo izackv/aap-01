@@ -11,9 +11,32 @@ mng_host_user: ""        # set only if mng_host needs a different SSH user than 
 
 # nmap scan
 scan_ports: "22,80,443,3389,5985,5986"
-# Privileged scan (needs root / CAP_NET_RAW on mng_host). If it can't run privileged,
-# set:  nmap_opts: "-sT -sV --version-light"  (drops -O: loses the OS guess for no-SSH hosts)
+
+# nmap_discovery: host-discovery probes. A host is counted UP if it answers any
+# of these. Specifying any -P* flag REPLACES nmap's default discovery set
+# entirely. Defaults cover most fleets: ICMP echo + TCP-SYN to common service
+# ports (SSH/HTTPS/RDP) + TCP-ACK to 80 (catches hosts behind stateless
+# firewalls). Common overrides:
+#   -e nmap_discovery=-Pn                       # skip discovery entirely
+#                                               # (firewall blocks all probes)
+#   -e nmap_discovery="-PE -PS3389,445,135"     # Windows-heavy fleet
+#   -e nmap_discovery="-PS443"                  # locked-down DMZ
+nmap_discovery: "-PE -PS22,443,3389 -PA80"
+
+# nmap_opts: scan technique. Privileged (needs root / CAP_NET_RAW on mng_host).
+# If you can't run privileged, set: nmap_opts: "-sT -sV --version-light"
+# (drops -O: loses the OS guess for no-SSH hosts).
 nmap_opts: "-sS -O --osscan-guess -sV --version-light"
+
+# nmap_timing: parallelism, retry, and per-host budget. Tuned for inventories
+# of 1000s of hosts. The earlier "-T4 --min-hostgroup 256 --max-retries 2
+# --host-timeout 30s" set was fast but lost large numbers of hosts to false-
+# down classifications (discovery probes dropped under load) and mid-scan
+# host-timeouts. See README "Tuning the nmap scan at scale" for per-flag
+# rationale. --reason populates the host-level status_reason in the XML, which
+# parse_nmap.py surfaces as 'nmap: <reason>' in error_msg for blank-data rows.
+# --stats-every prints progress to stderr (visible in AAP job output).
+nmap_timing: "-T3 --host-timeout 5m --max-rate 500 --reason --stats-every 30s"
 
 # Working files (targets list + nmap XML live on mng_host; XML is fetched to the EE)
 remote_targets_file: /tmp/discovery_targets.txt

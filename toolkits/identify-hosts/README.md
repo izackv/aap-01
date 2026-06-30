@@ -22,7 +22,11 @@ Override any knob per run with `-e` (CLI) or an AAP extra var / survey field.
    reads it with `-iL` (avoids a 5000-host command line / ARG_MAX) and does
    liveness + port-22 state + OS guess in a single pass. The XML is fetched back
    and parsed locally. Only up-and-22-open hosts advance to Phase 2. nmap runs
-   once (it parallelises internally; it is not gated by Ansible forks).
+   once (it parallelises internally; it is not gated by Ansible forks). The
+   nmap command is composed from three `-e`-overridable knobs in `vars/main.yml`:
+   `nmap_discovery` (how we decide a host is up), `nmap_opts` (what we do once
+   it is), and `nmap_timing` (how aggressively). See [Tuning the nmap scan at
+   scale](#tuning-the-nmap-scan-at-scale).
 2. **Phase 2 - facts, only for the SSH-reachable subset.** Facts are gathered
    with an **explicit `setup:` task** (not the implicit `gather_facts`) so the
    result can be registered: a per-host failure is caught (`ignore_errors` +
@@ -41,6 +45,25 @@ priority order) as one of: `auth-failed`, `timeout`, `python-version`,
 Hosts that never had port 22 open are left blank here (they are *expected* to
 have no SSH facts — they are not "errored").
 
+### `error_msg` for blank-data rows (Phase 1)
+
+When a row has `detection_method=none` (nmap classified the host down, or the
+host was absent from the scan entirely), `error_msg` carries the nmap
+host-discovery reason so the row tells you *why* it's blank:
+
+| `error_msg` | What it means | First fix to try |
+|---|---|---|
+| `nmap: no-response` | All host-discovery probes (`-PE -PS -PA`) timed out. Often false-down: host is up, replies were dropped under load or by rate-limits. | Lower `--max-rate` if a firewall is dropping; drop any low `--max-retries` override. |
+| `nmap: host-timeout` | Host's wall-clock budget elapsed mid-scan. | Raise `--host-timeout` (default `5m`). |
+| `nmap: admin-prohibited` | A firewall on the path sent an ICMP unreachable. | Network/firewall change — not a scan-tuning issue. |
+| `nmap: absent` | Target was on the `-iL` list but produced no XML record (rare; usually nmap aborted that batch). | Check nmap stderr in the AAP job output; conntrack overflow on `mng_host` is a common cause. |
+| `nmap:` *(empty reason)* | Scan ran without `--reason`. | Re-add `--reason` to `nmap_timing`. |
+
+`error_class` stays blank for these rows — the class taxonomy is Phase-2
+SSH-fact-failure classification. `nmap-guess` and `nmap-partial` rows are
+not blank (they have ports / mac / banner / sometimes OS), so they carry no
+error.
+
 ## Where the old ansible.cfg settings went
 
 Everything except `forks` is now a play var or task arg in `discover.yml`:
@@ -57,6 +80,85 @@ Everything except `forks` is now a play var or task arg in `discover.yml`:
 | `retry_files`, `stdout_callback`, `display_skipped_hosts` | dropped (defaults / AAP owns output) |
 | `inventory` | the AAP job template inventory |
 | **`forks`** | **AAP job template "Forks" field** (no playbook equivalent) |
+
+## Tuning the nmap scan at scale
+
+The nmap command is built from three independently overridable vars, each
+covering one concern. Defaults are tuned for inventories of 1000s of hosts.
+
+```
+nmap  {{ nmap_discovery }}  {{ nmap_opts }}  {{ nmap_timing }}  -p {{ scan_ports }} -iL ... -oX ...
+```
+
+Override per run with `-e <var>="..."` (CLI) or an AAP extra var / survey
+field — extra vars win over `vars_files`.
+
+### `nmap_discovery` — *how do we decide a host is up?*
+
+Default: `-PE -PS22,443,3389 -PA80`. A host counts as up if it answers *any*
+of the probes. Specifying any `-P*` flag REPLACES nmap's built-in discovery
+set entirely (so you don't get the defaults on top).
+
+| Flag (default) | Probe |
+|---|---|
+| `-PE` | ICMP echo (classic "ping"). |
+| `-PS22,443,3389` | TCP-SYN ping to SSH / HTTPS / RDP. Catches hosts that block ICMP at the perimeter. |
+| `-PA80` | TCP-ACK ping to 80. Catches hosts behind stateless firewalls that drop SYN-INIT but pass ACK. |
+
+Common overrides:
+
+| Scenario | Override |
+|---|---|
+| Firewall blocks all discovery probes but you know hosts are up | `-e nmap_discovery=-Pn` (skip discovery, scan every host) |
+| Windows-heavy fleet | `-e nmap_discovery="-PE -PS3389,445,135"` |
+| Locked-down DMZ, only 443 reachable | `-e nmap_discovery="-PS443"` |
+
+`-Pn` is the biggest hammer: it scans every host in the inventory whether or
+not it would have answered discovery. Useful when discovery is the failure
+mode (everything comes back `no-response`), expensive when most of the
+inventory is genuinely down.
+
+### `nmap_opts` — *what do we do once it's up?*
+
+Default: `-sS -O --osscan-guess -sV --version-light`. Privileged scan (needs
+root / `CAP_NET_RAW` on `mng_host`). If you can't run privileged, set
+`nmap_opts: "-sT -sV --version-light"` — you keep liveness, ports, and the
+SSH banner but lose the OS guess for no-SSH hosts (SSH-able hosts still get
+authoritative facts in Phase 2).
+
+### `nmap_timing` — *how aggressively?*
+
+Default: `-T3 --host-timeout 5m --max-rate 500 --reason --stats-every 30s`.
+The earlier `-T4 --min-hostgroup 256 --max-retries 2 --host-timeout 30s` was
+fast but lost many hosts to false-down classifications (discovery probes
+dropped under load) and mid-scan host timeouts.
+
+| Flag (default) | Purpose |
+|---|---|
+| `-T3` | "Normal" timing template — larger RTT and per-probe retry budgets than `-T4`. Fewer false-downs under contention; wall-time cost at this scale is modest. |
+| `--host-timeout 5m` | Wall-clock cap per host. `30s` chopped hosts mid-fingerprint when 256 were scanned in parallel; `5m` lets slow paths finish. |
+| `--max-rate 500` | Caps outbound probes per second. Keeps the scanner under firewall / kernel ICMP rate-limits. Raise on a clean LAN; lower if `dmesg` on `mng_host` shows conntrack overflow. |
+| `--reason` | Records *why* each host got its state (`echo-reply`, `no-response`, `host-timeout`, ...) in the XML. Surfaced as `nmap: <reason>` in `error_msg` for blank-data rows — leave on. |
+| `--stats-every 30s` | Prints scan progress to stderr (visible in AAP job output). Confirms a multi-minute scan is alive. |
+
+Flags deliberately NOT in the default:
+
+- `--min-hostgroup` — let nmap auto-size batches. A forced floor (e.g. 256)
+  compresses every host's budget and amplifies losses on the slow paths.
+- `--max-retries` — falls back to T3's default (10). Low values (e.g. 2)
+  cause false-down classification whenever a discovery probe is dropped.
+
+### `mng_host` ceilings worth checking mid-scan
+
+A scan against thousands of hosts can hit kernel limits that silently drop
+replies. If rows still come back blank despite generous timing:
+
+```
+sysctl net.netfilter.nf_conntrack_count net.netfilter.nf_conntrack_max
+dmesg | grep -i conntrack    # 'table full' => raise nf_conntrack_max
+ulimit -n                    # FD limit; relevant if you fall back to -sT
+sysctl net.ipv4.neigh.default.gc_thresh{1,2,3}   # ARP cache, for LAN scans
+```
 
 ## Running in AAP
 
@@ -142,5 +244,8 @@ open_ports, mac, mac_vendor, ssh_banner, last_checked, error_class, error_msg`.
 - `nmap-partial` — host is reachable (up) but nmap couldn't fingerprint the OS; you still get liveness, open ports, and any banner.
 - `none` — not reachable (down, filtered, or absent from the scan entirely).
 
-`error_class` / `error_msg` are populated only for hosts that were SSH-open but
-whose fact gather failed (see the `error_class` list above).
+`error_class` is populated only for SSH-open hosts whose fact gather failed
+(see the `error_class` list above). `error_msg` carries either that classified
+Phase-2 message OR, for `detection_method=none` rows, the nmap host-discovery
+reason (`nmap: no-response`, `nmap: host-timeout`, `nmap: absent`, ...) — see
+[`error_msg` for blank-data rows](#error_msg-for-blank-data-rows-phase-1).

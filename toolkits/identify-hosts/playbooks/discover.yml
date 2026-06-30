@@ -56,8 +56,7 @@
 
     - name: Run nmap once on the tools host (reads -iL; -sS/-O need root there)
       ansible.builtin.command: >-
-        nmap -PE -PS22,443,3389 -PA80 {{ nmap_opts }}
-        -T4 --min-hostgroup 256 --max-retries 2 --host-timeout 30s
+        nmap {{ nmap_discovery }} {{ nmap_opts }} {{ nmap_timing }}
         -p {{ scan_ports }} -iL {{ remote_targets_file }} -oX {{ remote_xml }}
       become: true                 # escalates on the tools host, not the EE
       register: nmap_run

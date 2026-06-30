@@ -56,10 +56,23 @@ fqdn,ipv4,reachable,ssh_open,os,os_version,os_accuracy,detection_method,machine_
 {%-     set mac = (n.mac if n else '') %}
 {%-     set mac_vendor = (n.mac_vendor if n else '') %}
 {%-     set banner = (n.ssh_banner if n else '') %}
-{#-     Port 22 was open but facts didn't land -> surface the captured error.
-        No-SSH hosts stay blank (not falsely "errored"). -#}
-{%-     set err_class = (hv.fact_error_class | default('')) if (n and n.ssh_open) else '' %}
-{%-     set err_msg   = (hv.fact_error_msg   | default('')) if (n and n.ssh_open) else '' %}
+{#-     err_class / err_msg:
+        - SSH-open + fact gather failed -> Phase-2 classified message wins.
+        - detection_method=none -> 'nmap: <reason>' surfaces WHY the row is
+          blank (no-response, host-timeout, admin-prohibited, absent from
+          scan, ...). Empty reason -> 'absent' (host wasn't in the nmap XML
+          at all). err_class stays '' here (the class taxonomy is Phase-2).
+        - nmap-guess / nmap-partial rows have data, so no error. -#}
+{%-     if n and n.ssh_open %}
+{%-       set err_class = hv.fact_error_class | default('') %}
+{%-       set err_msg   = hv.fact_error_msg   | default('') %}
+{%-     elif method == 'none' %}
+{%-       set err_class = '' %}
+{%-       set err_msg   = 'nmap: ' ~ ((n.status_reason if n else '') or 'absent') %}
+{%-     else %}
+{%-       set err_class = '' %}
+{%-       set err_msg   = '' %}
+{%-     endif %}
 {%-   endif %}
 {{ q(fqdn) }},{{ q(ip) }},{{ q(reachable) }},{{ q(ssh_open) }},{{ q(os) }},{{ q(osver) }},{{ q(acc) }},{{ q(method) }},{{ q(mtype) }},{{ q(vtype) }},{{ q(arch) }},{{ q(kernel) }},{{ q(uptime) }},{{ q(cpu) }},{{ q(mem) }},{{ q(open_ports) }},{{ q(mac) }},{{ q(mac_vendor) }},{{ q(banner) }},{{ q(run_timestamp) }},{{ q(err_class) }},{{ q(err_msg) }}
 {% endfor %}
